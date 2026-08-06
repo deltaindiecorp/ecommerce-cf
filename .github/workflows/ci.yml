@@ -12,9 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Versi pnpm dibaca dari "packageManager" di package.json — jangan set
+      # `version` di sini juga, pnpm/action-setup@v4 menolak kalau didefinisikan dobel.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
