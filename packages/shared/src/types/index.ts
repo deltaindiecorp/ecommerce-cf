@@ -43,6 +43,16 @@ export type ShippingRate = {
   etd: string;
 };
 
+export type AdminStatsOverview = {
+  totalSalesToday:      number;
+  totalSalesTrendPct:   number;  // vs kemarin, bisa negatif
+  newOrdersToday:       number;
+  newOrdersTrendPct:    number;
+  newCustomersToday:    number;
+  newCustomersTrendPct: number;
+  weeklyRevenue: Array<{ date: string; label: string; revenue: number }>;
+};
+
 export type CityOption = {
   cityId:     number;
   cityName:   string;

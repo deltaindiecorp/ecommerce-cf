@@ -9,6 +9,78 @@ import { paginationSchema } from "@repo/shared";
 
 export const adminRouter = new Hono<{ Bindings: Env }>();
 
+const SALES_STATUSES = ["paid", "processing", "packed", "shipped", "delivered", "completed"];
+const DAY_LABELS = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"]; // getUTCDay(): 0=Minggu
+
+// WIB (UTC+7): geser dulu baru format sebagai UTC — trik umum untuk dapat
+// "tanggal kalender lokal" tanpa library timezone.
+function wibDateKey(offsetDays: number): string {
+  const ms = Date.now() + 7 * 60 * 60 * 1000 - offsetDays * 24 * 60 * 60 * 1000;
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+function pctChange(today: number, yesterday: number): number {
+  if (yesterday === 0) return today > 0 ? 100 : 0;
+  return Math.round(((today - yesterday) / yesterday) * 1000) / 10;
+}
+
+// ─── GET /api/admin/stats/overview ─────────────────────────────────────────────
+// Statistik dashboard — semua dihitung dari data D1 asli (bukan angka contoh):
+// penjualan/pesanan/pelanggan baru hari ini + tren vs kemarin, dan pendapatan
+// 7 hari terakhir untuk grafik. Zona waktu WIB (UTC+7).
+adminRouter.get("/stats/overview", requireAdmin, async (c) => {
+  const boundaryEpoch = Math.floor(Date.now() / 1000) - 8 * 24 * 60 * 60;
+
+  const ordersResult = await c.env.DB.prepare(`
+    SELECT
+      date(created_at, 'unixepoch', '+7 hours') as day,
+      SUM(CASE WHEN status IN (${SALES_STATUSES.map(() => "?").join(",")}) THEN total ELSE 0 END) as revenue,
+      COUNT(*) as orderCount
+    FROM orders
+    WHERE created_at >= ?
+    GROUP BY day
+  `).bind(...SALES_STATUSES, boundaryEpoch).all<{ day: string; revenue: number; orderCount: number }>();
+
+  const customersResult = await c.env.DB.prepare(`
+    SELECT date(created_at, 'unixepoch', '+7 hours') as day, COUNT(*) as count
+    FROM users
+    WHERE role = 'customer' AND is_guest = 0 AND created_at >= ?
+    GROUP BY day
+  `).bind(boundaryEpoch).all<{ day: string; count: number }>();
+
+  const ordersByDay    = new Map(ordersResult.results.map(r => [r.day, r]));
+  const customersByDay = new Map(customersResult.results.map(r => [r.day, r.count]));
+
+  const todayKey     = wibDateKey(0);
+  const yesterdayKey = wibDateKey(1);
+
+  const todaySales      = ordersByDay.get(todayKey)?.revenue ?? 0;
+  const yesterdaySales  = ordersByDay.get(yesterdayKey)?.revenue ?? 0;
+  const todayOrders     = ordersByDay.get(todayKey)?.orderCount ?? 0;
+  const yesterdayOrders = ordersByDay.get(yesterdayKey)?.orderCount ?? 0;
+  const todayCustomers     = customersByDay.get(todayKey) ?? 0;
+  const yesterdayCustomers = customersByDay.get(yesterdayKey) ?? 0;
+
+  const weeklyRevenue = Array.from({ length: 7 }, (_, i) => {
+    const key  = wibDateKey(6 - i); // dari 6 hari lalu ke hari ini
+    const date = new Date(`${key}T00:00:00Z`);
+    return { date: key, label: DAY_LABELS[date.getUTCDay()], revenue: ordersByDay.get(key)?.revenue ?? 0 };
+  });
+
+  return c.json({
+    success: true,
+    data: {
+      totalSalesToday:      todaySales,
+      totalSalesTrendPct:   pctChange(todaySales, yesterdaySales),
+      newOrdersToday:       todayOrders,
+      newOrdersTrendPct:    pctChange(todayOrders, yesterdayOrders),
+      newCustomersToday:    todayCustomers,
+      newCustomersTrendPct: pctChange(todayCustomers, yesterdayCustomers),
+      weeklyRevenue,
+    },
+  });
+});
+
 // ─── GET /api/admin/products ───────────────────────────────────────────────────
 // Beda dari GET /api/catalog/products (publik, cuma status "active") — ini
 // menampilkan semua status (draft/active/archived) untuk dikelola admin.

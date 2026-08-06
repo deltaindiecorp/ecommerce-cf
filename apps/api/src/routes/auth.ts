@@ -121,7 +121,20 @@ authRouter.get("/me", async (c) => {
   }
   try {
     const payload = await verifyJwt(authHeader.slice(7), c.env.JWT_SECRET);
-    return c.json({ success: true, data: payload });
+
+    // Token guest: sub-nya email, bukan user id — tidak ada baris di tabel users
+    if (payload.role === "guest") {
+      return c.json({ success: true, data: payload });
+    }
+
+    const db   = createD1Client(c.env.DB);
+    const user = await db.query.users.findFirst({ where: eq(users.id, payload.sub) });
+    if (!user) return c.json({ success: false, error: "User tidak ditemukan" }, 404);
+
+    return c.json({
+      success: true,
+      data: { id: user.id, name: user.name, email: user.email, role: user.role },
+    });
   } catch {
     return c.json({ success: false, error: "Token tidak valid" }, 401);
   }
