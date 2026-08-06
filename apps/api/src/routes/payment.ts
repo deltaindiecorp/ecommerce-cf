@@ -4,7 +4,7 @@ import { createD1Client } from "@repo/db";
 import { orders, payments, inventory, inventoryMovements, shipments } from "@repo/db/schema";
 import { eq, and } from "drizzle-orm";
 import { createId } from "@repo/db";
-import { requireAuth } from "../middleware/auth";
+import { requireAdmin } from "../middleware/auth";
 
 export const paymentRouter = new Hono<{ Bindings: Env }>();
 
@@ -127,6 +127,60 @@ paymentRouter.post("/webhook/xendit", async (c) => {
   return c.json({ success: true });
 });
 
+// ─── POST /api/payment/:orderId/refund ────────────────────────────────────────
+// Full refund (bukan partial per-item). Coba proses ke gateway dulu (Midtrans/
+// Xendit) — kalau itu gagal, status TIDAK diubah supaya tidak mismatch antara
+// catatan kita dan gateway. COD/manual tidak punya API refund, langsung update status.
+paymentRouter.post("/:orderId/refund", requireAdmin, async (c) => {
+  const orderId = c.req.param("orderId");
+  const body    = await c.req.json<{ reason?: string }>().catch(() => ({}) as { reason?: string });
+  const reason  = body.reason;
+
+  const db    = createD1Client(c.env.DB);
+  const order = await db.query.orders.findFirst({ where: eq(orders.id, orderId) });
+  if (!order) return c.json({ success: false, error: "Order tidak ditemukan" }, 404);
+
+  const REFUNDABLE_STATUSES = ["paid", "processing", "packed", "shipped", "delivered", "completed"];
+  if (!REFUNDABLE_STATUSES.includes(order.status)) {
+    return c.json({ success: false, error: `Order berstatus "${order.status}" tidak bisa di-refund` }, 400);
+  }
+
+  const payment = await db.query.payments.findFirst({
+    where: and(eq(payments.orderId, orderId), eq(payments.status, "paid")),
+  });
+  if (!payment) return c.json({ success: false, error: "Tidak ada pembayaran berstatus paid untuk order ini" }, 400);
+
+  try {
+    if (payment.gateway === "midtrans" && payment.gatewayTxnId) {
+      await refundMidtrans(c.env, payment.gatewayTxnId, order.total, reason);
+    } else if (payment.gateway === "xendit" && payment.gatewayTxnId) {
+      await refundXendit(c.env, payment.gatewayTxnId, order.total, reason);
+    }
+  } catch (err) {
+    return c.json({ success: false, error: err instanceof Error ? err.message : "Refund ke gateway gagal" }, 502);
+  }
+
+  await db.update(payments)
+    .set({ status: "refunded", updatedAt: new Date() })
+    .where(eq(payments.id, payment.id));
+
+  await db.update(orders)
+    .set({ status: "refunded", cancelReason: reason ?? "Refund oleh admin", updatedAt: new Date() })
+    .where(eq(orders.id, orderId));
+
+  // Order belum dikirim → lepas reservasi stok. Kalau sudah shipped/delivered,
+  // itu retur fisik barang — restock manual lewat /warehouse/:id/inventory/adjust
+  // setelah barang benar-benar diterima kembali, bukan otomatis di sini.
+  if (["paid", "processing", "packed"].includes(order.status)) {
+    const { releaseOrderStock } = await import("../services/inventory");
+    await releaseOrderStock(db, orderId);
+  }
+
+  await c.env.NOTIFICATION_QUEUE.send({ type: "order_refunded", orderId, paymentId: payment.id });
+
+  return c.json({ success: true });
+});
+
 // ─── GET /api/payment/:orderId/status ─────────────────────────────────────────
 paymentRouter.get("/:orderId/status", async (c) => {
   const db      = createD1Client(c.env.DB);
@@ -201,6 +255,38 @@ async function createXenditInvoice(env: Env, order: any, paymentId: string) {
     gatewayTxnId: data.id,
     invoiceUrl:   data.invoice_url,
   };
+}
+
+async function refundMidtrans(env: Env, gatewayTxnId: string, amount: number, reason?: string): Promise<void> {
+  const isProd  = env.MIDTRANS_IS_PROD === "true";
+  const baseUrl = isProd ? "https://api.midtrans.com" : "https://api.sandbox.midtrans.com";
+  const authKey = btoa(`${env.MIDTRANS_SERVER_KEY}:`);
+
+  const res = await fetch(`${baseUrl}/v2/${gatewayTxnId}/refund`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Basic ${authKey}` },
+    body:    JSON.stringify({ amount, reason: reason ?? "Refund oleh admin" }),
+  });
+
+  if (!res.ok) throw new Error(`Refund Midtrans gagal (${res.status}): ${await res.text()}`);
+}
+
+async function refundXendit(env: Env, invoiceId: string, amount: number, reason?: string): Promise<void> {
+  const res = await fetch("https://api.xendit.co/refunds", {
+    method:  "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization:  `Basic ${btoa(env.XENDIT_SECRET_KEY + ":")}`,
+    },
+    body: JSON.stringify({
+      invoice_id: invoiceId,
+      amount,
+      reason:     "OTHERS",
+      metadata:   { note: reason ?? "Refund oleh admin" },
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Refund Xendit gagal (${res.status}): ${await res.text()}`);
 }
 
 async function handlePaymentSuccess(db: any, env: Env, orderId: string, paymentId: string, payload: any) {

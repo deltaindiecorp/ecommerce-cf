@@ -5,6 +5,7 @@ import { users } from "@repo/db/schema";
 import { eq } from "drizzle-orm";
 import { createId } from "@repo/db";
 import { signJwt, verifyJwt } from "../middleware/auth";
+import { rateLimit, keyByEmailFromBody } from "../middleware/rate-limit";
 import { KV_KEYS, KV_TTL } from "@repo/shared";
 import { z } from "zod";
 
@@ -23,7 +24,7 @@ const loginSchema = z.object({
 });
 
 // ─── POST /api/auth/register ──────────────────────────────────────────────────
-authRouter.post("/register", async (c) => {
+authRouter.post("/register", rateLimit({ keyPrefix: "register", limit: 5, windowSec: 3600 }), async (c) => {
   const body   = await c.req.json();
   const parsed = registerSchema.safeParse(body);
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
@@ -49,7 +50,7 @@ authRouter.post("/register", async (c) => {
 });
 
 // ─── POST /api/auth/login ──────────────────────────────────────────────────────
-authRouter.post("/login", async (c) => {
+authRouter.post("/login", rateLimit({ keyPrefix: "login", limit: 10, windowSec: 900 }), async (c) => {
   const body   = await c.req.json();
   const parsed = loginSchema.safeParse(body);
   if (!parsed.success) return c.json({ success: false, error: "Input tidak valid" }, 400);
@@ -75,7 +76,9 @@ authRouter.post("/login", async (c) => {
 
 // ─── POST /api/auth/guest/send-otp ────────────────────────────────────────────
 // Kirim OTP ke email guest untuk verifikasi order status
-authRouter.post("/guest/send-otp", async (c) => {
+authRouter.post("/guest/send-otp", rateLimit({
+  keyPrefix: "send-otp", limit: 3, windowSec: 600, keyFn: keyByEmailFromBody,
+}), async (c) => {
   const { email } = await c.req.json<{ email: string }>();
   if (!email) return c.json({ success: false, error: "Email wajib diisi" }, 400);
 
@@ -91,7 +94,9 @@ authRouter.post("/guest/send-otp", async (c) => {
 });
 
 // ─── POST /api/auth/guest/verify-otp ─────────────────────────────────────────
-authRouter.post("/guest/verify-otp", async (c) => {
+authRouter.post("/guest/verify-otp", rateLimit({
+  keyPrefix: "verify-otp", limit: 5, windowSec: 600, keyFn: keyByEmailFromBody,
+}), async (c) => {
   const { email, otp } = await c.req.json<{ email: string; otp: string }>();
   const otpKey  = KV_KEYS.otpEmail(email);
   const storedOtp = await c.env.SESSION_KV.get(otpKey);
@@ -127,7 +132,7 @@ authRouter.get("/me", async (c) => {
 // admin) DAN hanya jalan kalau belum ada satu pun user berrole admin. Setelah
 // admin pertama dibuat, endpoint ini selalu menolak — pakai panel admin untuk
 // menambah admin berikutnya.
-authRouter.post("/bootstrap-admin", async (c) => {
+authRouter.post("/bootstrap-admin", rateLimit({ keyPrefix: "bootstrap-admin", limit: 5, windowSec: 3600 }), async (c) => {
   const secret = c.req.header("X-Bootstrap-Secret");
   if (!c.env.ADMIN_BOOTSTRAP_SECRET || secret !== c.env.ADMIN_BOOTSTRAP_SECRET) {
     return c.json({ success: false, error: "Unauthorized" }, 401);

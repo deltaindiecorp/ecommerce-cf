@@ -1,8 +1,8 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/cloudflare";
 import { Form, useActionData, useLoaderData, useNavigation } from "@remix-run/react";
 import { json, redirect } from "@remix-run/cloudflare";
-import { useState } from "react";
-import type { ShippingRate, ApiResponse } from "@repo/shared";
+import { useState, useEffect } from "react";
+import type { ShippingRate, ApiResponse, CityOption } from "@repo/shared";
 
 import { API_BASE } from "~/lib/config";
 
@@ -63,6 +63,46 @@ export default function CheckoutPage() {
   const nav              = useNavigation();
   const isSubmitting     = nav.state === "submitting";
 
+  // ─── Pencarian kota (autocomplete RajaOngkir) ───────────────────────────────
+  const [citySearch, setCitySearch]     = useState("");
+  const [cityOptions, setCityOptions]   = useState<CityOption[]>([]);
+  const [cityLoading, setCityLoading]   = useState(false);
+  const [selectedCity, setSelectedCity] = useState<CityOption | null>(null);
+  const [cityText, setCityText]         = useState("");
+  const [provinceText, setProvinceText] = useState("");
+  const [postalCodeText, setPostalCodeText] = useState("");
+
+  // Debounce 300ms supaya tidak fetch di setiap ketikan
+  useEffect(() => {
+    if (selectedCity || citySearch.trim().length < 2) {
+      setCityOptions([]);
+      return;
+    }
+    setCityLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res  = await fetch(`${API_BASE}/api/shipping/cities?search=${encodeURIComponent(citySearch)}`);
+        const body = await res.json() as ApiResponse<CityOption[]>;
+        setCityOptions(body.success ? body.data : []);
+      } catch {
+        setCityOptions([]);
+      } finally {
+        setCityLoading(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [citySearch, selectedCity]);
+
+  function selectCity(city: CityOption) {
+    setSelectedCity(city);
+    setCitySearch(`${city.type} ${city.cityName}`);
+    setCityOptions([]);
+    setCityText(city.cityName);
+    setProvinceText(city.province);
+    setPostalCodeText(city.postalCode);
+    setDestinationCityId(String(city.cityId));
+  }
+
   // ─── Ongkir dinamis ──────────────────────────────────────────────────────
   const [destinationCityId, setDestinationCityId] = useState("");
   const [rates, setRates]           = useState<ShippingRate[]>([]);
@@ -72,7 +112,7 @@ export default function CheckoutPage() {
 
   async function checkOngkir() {
     if (!destinationCityId) {
-      setOngkirError("Isi ID kota tujuan (RajaOngkir) dulu");
+      setOngkirError("Cari dan pilih kota tujuan dulu");
       return;
     }
     setOngkirLoading(true);
@@ -160,23 +200,49 @@ export default function CheckoutPage() {
             <input name="phone"    placeholder="No. HP penerima" required className="input" />
             <textarea name="address" placeholder="Alamat lengkap" required className="input" rows={3} />
             <input name="district" placeholder="Kecamatan" required className="input" />
-            <input name="city"     placeholder="Kota" required className="input" />
-            <input name="province" placeholder="Provinsi" required className="input" />
-            <input name="postalCode" placeholder="Kode pos" required className="input" />
-            <div>
+
+            {/* Autocomplete kota tujuan (RajaOngkir) */}
+            <div className="relative">
               <input
-                name="rajaongkirCityId"
-                type="number"
-                placeholder="ID Kota RajaOngkir tujuan"
+                placeholder="Cari kota tujuan... (mis. Bandung)"
                 required
-                className="input"
-                value={destinationCityId}
-                onChange={(e) => setDestinationCityId(e.target.value)}
+                className="input w-full"
+                value={citySearch}
+                onChange={(e) => { setCitySearch(e.target.value); setSelectedCity(null); }}
               />
-              <p className="text-xs text-gray-400 mt-1">
-                Cek ID kota di dokumentasi RajaOngkir (fitur cari kota otomatis belum tersedia).
-              </p>
+              {cityLoading && <p className="text-xs text-gray-400 mt-1">Mencari...</p>}
+              {cityOptions.length > 0 && (
+                <div className="absolute z-10 bg-white border rounded shadow mt-1 max-h-48 overflow-y-auto w-full">
+                  {cityOptions.map((city) => (
+                    <button
+                      key={city.cityId}
+                      type="button"
+                      onClick={() => selectCity(city)}
+                      className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-50"
+                    >
+                      {city.type} {city.cityName}, {city.province}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {selectedCity && (
+                <p className="text-green-600 text-xs mt-1">✓ {selectedCity.type} {selectedCity.cityName} dipilih</p>
+              )}
             </div>
+
+            <input
+              name="city" placeholder="Kota" required className="input"
+              value={cityText} onChange={(e) => setCityText(e.target.value)}
+            />
+            <input
+              name="province" placeholder="Provinsi" required className="input"
+              value={provinceText} onChange={(e) => setProvinceText(e.target.value)}
+            />
+            <input
+              name="postalCode" placeholder="Kode pos" required className="input"
+              value={postalCodeText} onChange={(e) => setPostalCodeText(e.target.value)}
+            />
+            <input type="hidden" name="rajaongkirCityId" value={destinationCityId} />
           </div>
         </section>
 

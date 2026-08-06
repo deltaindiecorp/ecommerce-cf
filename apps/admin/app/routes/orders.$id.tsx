@@ -11,6 +11,8 @@ const ORDER_STATUSES = [
   "pending_payment", "paid", "processing", "packed",
   "shipped", "delivered", "completed", "cancelled", "refunded",
 ];
+// Sinkron dengan REFUNDABLE_STATUSES di apps/api/src/routes/payment.ts
+const REFUNDABLE_STATUSES = ["paid", "processing", "packed", "shipped", "delivered", "completed"];
 const STATUS_LABEL: Record<string, string> = {
   pending_payment: "Menunggu Bayar",
   paid:            "Lunas",
@@ -47,6 +49,18 @@ export async function action({ params, request }: ActionFunctionArgs) {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body:    JSON.stringify({ status, note: note || undefined }),
     });
+    return redirect(`/orders/${orderId}`);
+  }
+
+  if (intent === "refund") {
+    const reason = formData.get("reason") as string;
+    const res    = await fetch(`${API_BASE}/api/payment/${orderId}/refund`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body:    JSON.stringify({ reason: reason || undefined }),
+    });
+    const result = await res.json() as any;
+    if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect(`/orders/${orderId}`);
   }
 
@@ -238,6 +252,37 @@ export default function OrderDetailPage() {
                   </p>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Refund */}
+          {REFUNDABLE_STATUSES.includes(order.status) && (
+            <div className="bg-white rounded-xl shadow-sm p-5 border border-red-100">
+              <h2 className="font-semibold text-red-600 mb-3">Refund</h2>
+              <Form
+                method="post"
+                className="space-y-3"
+                onSubmit={(e) => {
+                  if (!confirm(`Yakin refund pesanan ${order.orderNo}? Aksi ini akan memproses refund ke gateway pembayaran.`)) {
+                    e.preventDefault();
+                  }
+                }}
+              >
+                <input type="hidden" name="intent" value="refund" />
+                <textarea
+                  name="reason"
+                  placeholder="Alasan refund (opsional)"
+                  rows={2}
+                  className="w-full border rounded-lg px-3 py-2 text-sm resize-none"
+                />
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="w-full bg-red-600 text-white py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+                >
+                  {isSubmitting ? "Memproses..." : "Proses Refund"}
+                </button>
+              </Form>
             </div>
           )}
         </div>

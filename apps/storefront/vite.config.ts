@@ -4,6 +4,16 @@ import { defineConfig } from "vite";
 import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
+  server: { port: 3000, strictPort: true },
+  // Entry server default Remix Cloudflare pakai `renderToReadableStream` dari
+  // react-dom/server — export itu cuma ada di build "worker" (react-dom/server.browser.js),
+  // bukan di build Node default. Tanpa ini, dev server error saat SSR.
+  ssr: {
+    resolve: {
+      conditions: ["workerd", "worker"],
+      externalConditions: ["workerd", "worker"],
+    },
+  },
   resolve: {
     alias: {
       "~": fileURLToPath(new URL("./app", import.meta.url)),

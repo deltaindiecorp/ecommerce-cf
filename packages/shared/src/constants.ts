@@ -6,6 +6,7 @@ export const KV_KEYS = {
   ongkir:        (from: number, to: number, weight: number) => `ongkir:${from}:${to}:${weight}`,
   productCache:  (slug: string) => `product:${slug}`,
   otpEmail:      (email: string) => `otp:${email}`,
+  rajaongkirCities: "rajaongkir:cities:all",
 } as const;
 
 // ─── KV TTLs (seconds) ────────────────────────────────────────────────────────
@@ -16,6 +17,7 @@ export const KV_TTL = {
   ongkir:       60 * 10,           // 10 menit
   product:      60 * 5,            // 5 menit
   otp:          60 * 10,           // 10 menit
+  cities:       60 * 60 * 24,      // 24 jam — daftar kota RajaOngkir jarang berubah
 } as const;
 
 // ─── Order Status Labels ──────────────────────────────────────────────────────

@@ -67,35 +67,40 @@ ecommerce-cf/
 # 1. Install dependencies
 pnpm install
 
-# 2. Setup Cloudflare resources
-wrangler d1 create ecommerce-db
-wrangler kv:namespace create CART_KV
-wrangler kv:namespace create SESSION_KV
-wrangler kv:namespace create CACHE_KV
-wrangler r2 bucket create ecommerce-storage
-wrangler queues create notification-queue
-wrangler queues create resi-poll-queue
+# 2. Login ke Cloudflare (sekali saja per akun)
+npx wrangler login
 
-# 3. Update wrangler.toml dengan ID yang didapat dari langkah 2
+# 3. Provisioning semua resource Cloudflare + suntik ID ke wrangler.toml
+#    (otomatis: D1, 3x KV, R2, 2x Queue, migration D1 remote)
+./scripts/setup.sh
 
-# 4. Generate dan jalankan migrasi D1
-cd packages/db
-pnpm db:generate
-wrangler d1 execute ecommerce-db --local --file=./migrations/xxxx.sql
-
-# 5. Set secrets via Cloudflare Dashboard atau CLI
+# 4. Isi secret (lihat daftar lengkap di akhir output scripts/setup.sh)
+cd apps/api
+wrangler secret put JWT_SECRET
 wrangler secret put MIDTRANS_SERVER_KEY
 wrangler secret put XENDIT_SECRET_KEY
 wrangler secret put RAJAONGKIR_API_KEY
 wrangler secret put BINDERBYTE_API_KEY
 wrangler secret put RESEND_API_KEY
-wrangler secret put JWT_SECRET
+cd ../..
 
-# 6. Dev mode
+# 5. Dev mode
 pnpm dev
 
-# 7. Deploy
+# 6. Deploy
 pnpm deploy
+```
+
+Untuk dev lokal tanpa resource Cloudflare asli (D1/KV/R2/Queues disimulasikan lewat Miniflare), cukup jalankan migrasi ke database lokal lalu `pnpm dev`:
+
+```bash
+cd apps/api
+for f in ../../packages/db/migrations/*.sql; do
+  npx wrangler d1 execute ecommerce-db --local --file="$f"
+done
+cp .dev.vars.example .dev.vars   # isi JWT_SECRET & ADMIN_BOOTSTRAP_SECRET buat dev
+cd ../..
+pnpm dev
 ```
 
 ## Migration Path ke Neon PostgreSQL
@@ -118,3 +123,7 @@ Schema Drizzle **tidak perlu diubah** — hanya dialect yang berbeda.
 - **Webhook idempotency**: Cek `payment.status === "paid"` sebelum proses ulang
 - **Warehouse routing**: Nearest + priority-based, fallback ke gudang lain jika stok habis
 - **Cart session**: Header `X-Cart-Id` untuk guest, merge ke user cart saat login
+
+## Lisensi
+
+[Apache License 2.0](LICENSE)

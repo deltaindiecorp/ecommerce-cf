@@ -2,14 +2,10 @@ import { Hono } from "hono";
 import type { Env } from "../types/env";
 import { requireAdmin } from "../middleware/auth";
 import { createId } from "@repo/db";
+import { detectImageType, IMAGE_EXTENSION } from "../lib/image-type";
 
 export const uploadRouter = new Hono<{ Bindings: Env }>();
 
-const ALLOWED_TYPES: Record<string, string> = {
-  "image/jpeg": "jpg",
-  "image/png":  "png",
-  "image/webp": "webp",
-};
 const MAX_SIZE_BYTES = 5 * 1024 * 1024; // 5MB
 
 // ─── POST /api/upload/product-image ───────────────────────────────────────────
@@ -22,18 +18,21 @@ uploadRouter.post("/product-image", requireAdmin, async (c) => {
   if (!(file instanceof File)) {
     return c.json({ success: false, error: "File tidak ditemukan (field 'file')" }, 400);
   }
-
-  const ext = ALLOWED_TYPES[file.type];
-  if (!ext) {
-    return c.json({ success: false, error: "Tipe file tidak didukung. Gunakan JPEG, PNG, atau WebP." }, 400);
-  }
   if (file.size > MAX_SIZE_BYTES) {
     return c.json({ success: false, error: "Ukuran file maksimal 5MB" }, 400);
   }
 
-  const filename = `${createId()}.${ext}`;
-  await c.env.STORAGE.put(`products/${filename}`, file.stream(), {
-    httpMetadata: { contentType: file.type },
+  const buffer = await file.arrayBuffer();
+  // Deteksi tipe dari isi file (magic bytes), bukan dari file.type yang
+  // diklaim client di header multipart — itu gampang dipalsukan.
+  const detectedType = detectImageType(new Uint8Array(buffer));
+  if (!detectedType) {
+    return c.json({ success: false, error: "File bukan gambar JPEG/PNG/WebP yang valid" }, 400);
+  }
+
+  const filename = `${createId()}.${IMAGE_EXTENSION[detectedType]}`;
+  await c.env.STORAGE.put(`products/${filename}`, buffer, {
+    httpMetadata: { contentType: detectedType },
   });
 
   const url = `${new URL(c.req.url).origin}/api/upload/product-image/${filename}`;

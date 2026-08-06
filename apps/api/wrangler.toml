@@ -71,7 +71,7 @@ crons = [
 [vars]
 ENVIRONMENT          = "production"
 APP_URL              = "https://your-store.com"
-CORS_ORIGINS         = "https://your-store.com,http://localhost:3000"
+CORS_ORIGINS         = "https://your-store.com,http://localhost:3000,http://localhost:3001"
 EMAIL_FROM_NAME      = "Toko Kami"
 EMAIL_FROM_ADDRESS   = "noreply@your-store.com"
 RAJAONGKIR_API_KEY   = ""   # isi di CF Dashboard → Secrets

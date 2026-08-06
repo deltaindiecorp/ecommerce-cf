@@ -59,6 +59,14 @@ export async function processNotifications(messages: readonly Message[], env: En
             <p>Terima kasih telah berbelanja. Jangan lupa berikan ulasan produk Anda.</p>
           `);
           break;
+
+        case "order_refunded":
+          await sendEmail(env, recipientEmail, `Pesanan ${order?.orderNo} Direfund`, `
+            <h2>Refund Diproses</h2>
+            <p>Pesanan <strong>${order?.orderNo}</strong> senilai <strong>Rp ${order?.total?.toLocaleString("id-ID")}</strong> telah direfund.</p>
+            <p>Dana akan kembali sesuai kebijakan metode pembayaran yang Anda gunakan.</p>
+          `);
+          break;
       }
 
       msg.ack();

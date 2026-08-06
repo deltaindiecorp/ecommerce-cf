@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../types/env";
 import { KV_KEYS, KV_TTL } from "@repo/shared";
-import type { ShippingRate, ResiStatus } from "@repo/shared";
+import type { ShippingRate, ResiStatus, CityOption } from "@repo/shared";
 import { createD1Client } from "@repo/db";
 import { shipments, warehouses } from "@repo/db/schema";
 import { eq } from "drizzle-orm";
@@ -25,6 +25,26 @@ shippingRouter.get("/origin", async (c) => {
     success: true,
     data: { warehouseId: wh.id, name: wh.name, rajaongkirCityId: wh.rajaongkirCityId },
   });
+});
+
+// ─── GET /api/shipping/cities ──────────────────────────────────────────────────
+// Autocomplete kota tujuan untuk checkout. RajaOngkir Starter tidak punya
+// endpoint search — API-nya cuma kasih SATU daftar kota lengkap (~500 baris),
+// jadi kita cache seluruh daftar 24 jam lalu filter di sini (bukan di RajaOngkir).
+shippingRouter.get("/cities", async (c) => {
+  const { search } = c.req.query();
+  if (!search || search.trim().length < 2) {
+    return c.json({ success: true, data: [] });
+  }
+
+  const cities = await getAllRajaOngkirCities(c.env);
+  const query  = search.trim().toLowerCase();
+
+  const matches: CityOption[] = cities
+    .filter(city => city.cityName.toLowerCase().includes(query) || city.province.toLowerCase().includes(query))
+    .slice(0, 20);
+
+  return c.json({ success: true, data: matches });
 });
 
 // ─── GET /api/shipping/ongkir ─────────────────────────────────────────────────
@@ -149,6 +169,35 @@ async function fetchRajaOngkir(
     }
   }
   return rates;
+}
+
+// ─── RajaOngkir City List Helper (untuk autocomplete) ─────────────────────────
+async function getAllRajaOngkirCities(env: Env): Promise<CityOption[]> {
+  const cached = await env.CACHE_KV.get(KV_KEYS.rajaongkirCities);
+  if (cached) return JSON.parse(cached);
+
+  const res  = await fetch("https://api.rajaongkir.com/starter/city", {
+    headers: { key: env.RAJAONGKIR_API_KEY },
+  });
+  const json = await res.json() as {
+    rajaongkir: {
+      results: Array<{
+        city_id: string; province: string; type: string;
+        city_name: string; postal_code: string;
+      }>
+    }
+  };
+
+  const cities: CityOption[] = (json.rajaongkir?.results ?? []).map(r => ({
+    cityId:     Number(r.city_id),
+    cityName:   r.city_name,
+    type:       r.type,
+    province:   r.province,
+    postalCode: r.postal_code,
+  }));
+
+  await env.CACHE_KV.put(KV_KEYS.rajaongkirCities, JSON.stringify(cities), { expirationTtl: KV_TTL.cities });
+  return cities;
 }
 
 // ─── Binderbyte Cek Resi Helper ───────────────────────────────────────────────

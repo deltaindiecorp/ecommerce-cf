@@ -1,5 +1,8 @@
 {
   "name": "ecommerce-cf",
+  "version": "0.1.0",
+  "description": "Full-stack e-commerce platform (Hono API + Remix storefront/admin) untuk deploy per-klien di Cloudflare Workers/Pages",
+  "license": "Apache-2.0",
   "private": true,
   "scripts": {
     "build": "turbo run build",

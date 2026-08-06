@@ -43,6 +43,14 @@ export type ShippingRate = {
   etd: string;
 };
 
+export type CityOption = {
+  cityId:     number;
+  cityName:   string;
+  type:       string; // "Kota" | "Kabupaten"
+  province:   string;
+  postalCode: string;
+};
+
 export type ResiStatus = {
   trackingNo: string;
   courier: string;
