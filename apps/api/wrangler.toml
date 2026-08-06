@@ -1,0 +1,94 @@
+name            = "ecommerce-api"
+main            = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# ─── D1 Database ──────────────────────────────────────────────────────────────
+[[d1_databases]]
+binding      = "DB"
+database_name = "ecommerce-db"
+database_id  = "YOUR_D1_DATABASE_ID"
+
+# ─── KV Namespaces ────────────────────────────────────────────────────────────
+[[kv_namespaces]]
+binding = "CART_KV"
+id      = "YOUR_CART_KV_ID"
+
+[[kv_namespaces]]
+binding = "SESSION_KV"
+id      = "YOUR_SESSION_KV_ID"
+
+[[kv_namespaces]]
+binding = "CACHE_KV"
+id      = "YOUR_CACHE_KV_ID"
+
+# ─── R2 Buckets ───────────────────────────────────────────────────────────────
+[[r2_buckets]]
+binding     = "STORAGE"
+bucket_name = "ecommerce-storage"
+
+# ─── Queues ───────────────────────────────────────────────────────────────────
+[[queues.producers]]
+binding    = "NOTIFICATION_QUEUE"
+queue      = "notification-queue"
+
+[[queues.producers]]
+binding    = "RESI_POLL_QUEUE"
+queue      = "resi-poll-queue"
+
+[[queues.consumers]]
+queue          = "notification-queue"
+max_batch_size = 10
+max_retries    = 3
+
+[[queues.consumers]]
+queue          = "resi-poll-queue"
+max_batch_size = 20
+max_retries    = 2
+
+# ─── Durable Objects ──────────────────────────────────────────────────────────
+[[durable_objects.bindings]]
+name        = "CART_DO"
+class_name  = "CartDurableObject"
+
+[[durable_objects.bindings]]
+name        = "STOCK_LOCK_DO"
+class_name  = "StockLockDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["CartDurableObject", "StockLockDurableObject"]
+
+# ─── Cron Triggers ────────────────────────────────────────────────────────────
+[triggers]
+crons = [
+  "*/30 * * * *",   # Poll resi setiap 30 menit
+  "0 * * * *",      # Expire pending payments tiap jam
+  "0 0 * * *",      # Daily cleanup guest sessions
+]
+
+# ─── Environment Variables ────────────────────────────────────────────────────
+[vars]
+ENVIRONMENT          = "production"
+APP_URL              = "https://your-store.com"
+CORS_ORIGINS         = "https://your-store.com,http://localhost:3000"
+EMAIL_FROM_NAME      = "Toko Kami"
+EMAIL_FROM_ADDRESS   = "noreply@your-store.com"
+RAJAONGKIR_API_KEY   = ""   # isi di CF Dashboard → Secrets
+BINDERBYTE_API_KEY   = ""
+MIDTRANS_SERVER_KEY  = ""
+MIDTRANS_CLIENT_KEY  = ""
+MIDTRANS_IS_PROD     = "true"
+XENDIT_SECRET_KEY    = ""
+XENDIT_WEBHOOK_TOKEN = ""
+RESEND_API_KEY       = ""
+JWT_SECRET           = ""
+ADMIN_BOOTSTRAP_SECRET = ""  # isi sementara utk setup admin pertama, lalu kosongkan lagi
+
+# ─── Migration Path: Hyperdrive (uncomment jika migrasi ke Neon) ──────────────
+# [[hyperdrive]]
+# binding    = "HYPERDRIVE"
+# id         = "YOUR_HYPERDRIVE_ID"
+
+[dev]
+port = 8787

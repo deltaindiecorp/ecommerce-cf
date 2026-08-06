@@ -1,0 +1,12 @@
+# Local dev secrets untuk `wrangler dev` — copy ke .dev.vars dan isi per klien.
+# Untuk production, set lewat: wrangler secret put <NAME>
+JWT_SECRET=
+MIDTRANS_SERVER_KEY=
+MIDTRANS_CLIENT_KEY=
+XENDIT_SECRET_KEY=
+XENDIT_WEBHOOK_TOKEN=
+RAJAONGKIR_API_KEY=
+BINDERBYTE_API_KEY=
+RESEND_API_KEY=
+# Sekali pakai untuk POST /api/auth/bootstrap-admin (buat admin pertama), lalu kosongkan lagi
+ADMIN_BOOTSTRAP_SECRET=
