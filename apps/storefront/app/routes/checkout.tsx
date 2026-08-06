@@ -5,6 +5,9 @@ import { useState, useEffect } from "react";
 import type { ShippingRate, ApiResponse, CityOption } from "@repo/shared";
 
 import { API_BASE } from "~/lib/config";
+import { SiteHeader } from "~/components/SiteHeader";
+import { SiteFooter } from "~/components/SiteFooter";
+import { MobileBottomNav } from "~/components/MobileBottomNav";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const cartId = new URL(request.url).searchParams.get("cartId") ?? "";
@@ -173,7 +176,9 @@ export default function CheckoutPage() {
   const total          = cart.subtotal + shippingCost - discount;
 
   return (
-    <div className="max-w-2xl mx-auto p-6">
+    <div className="min-h-screen bg-gray-50 flex flex-col pb-16 md:pb-0">
+      <SiteHeader />
+      <div className="flex-1 max-w-2xl mx-auto p-6 w-full">
       <h1 className="text-2xl font-bold mb-6">Checkout</h1>
 
       <Form method="post" className="space-y-6">
@@ -365,6 +370,9 @@ export default function CheckoutPage() {
           {isSubmitting ? "Memproses..." : !selectedRate ? "Pilih kurir dulu" : "Buat Pesanan"}
         </button>
       </Form>
+      </div>
+      <SiteFooter />
+      <MobileBottomNav />
     </div>
   );
 }

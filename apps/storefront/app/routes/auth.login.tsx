@@ -37,7 +37,7 @@ export default function LoginPage() {
     <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
       <div className="bg-white rounded-xl shadow p-8 w-full max-w-sm">
         <div className="text-center mb-6">
-          <Link to="/" className="text-2xl font-bold text-blue-600">Toko</Link>
+          <Link to="/" className="text-2xl font-bold text-blue-600">Deltacommerce</Link>
           <h1 className="text-xl font-semibold mt-3 text-gray-800">Masuk ke Akun</h1>
         </div>
 

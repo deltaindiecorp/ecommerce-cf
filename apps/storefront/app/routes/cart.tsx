@@ -3,6 +3,9 @@ import { json, redirect } from "@remix-run/cloudflare";
 import { useLoaderData, Form, Link, useNavigation } from "@remix-run/react";
 
 import { API_BASE } from "~/lib/config";
+import { SiteHeader } from "~/components/SiteHeader";
+import { SiteFooter } from "~/components/SiteFooter";
+import { MobileBottomNav } from "~/components/MobileBottomNav";
 
 function getCartId(request: Request): string | null {
   return request.headers.get("Cookie")?.match(/cartId=([^;]+)/)?.[1] ?? null;
@@ -53,19 +56,25 @@ export default function CartPage() {
 
   if (!cart || cart.items.length === 0) {
     return (
-      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center gap-4">
-        <p className="text-2xl">🛒</p>
-        <p className="text-gray-600">Keranjang belanja kosong</p>
-        <Link to="/" className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm">
-          Mulai Belanja
-        </Link>
+      <div className="min-h-screen bg-gray-50 flex flex-col pb-16 md:pb-0">
+        <SiteHeader />
+        <div className="flex-1 flex flex-col items-center justify-center gap-4 py-20">
+          <p className="text-4xl">🛒</p>
+          <p className="text-gray-600">Keranjang belanja kosong</p>
+          <Link to="/" className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm hover:bg-blue-700 transition-colors">
+            Mulai Belanja
+          </Link>
+        </div>
+        <SiteFooter />
+        <MobileBottomNav />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-3xl mx-auto px-4 py-8">
+    <div className="min-h-screen bg-gray-50 flex flex-col pb-16 md:pb-0">
+      <SiteHeader />
+      <div className="flex-1 max-w-3xl mx-auto px-4 py-8 w-full">
         <div className="flex items-center gap-4 mb-6">
           <Link to="/" className="text-gray-400 hover:text-gray-600 text-sm">← Lanjut Belanja</Link>
           <h1 className="text-2xl font-bold">Keranjang ({cart.itemCount} item)</h1>
@@ -149,6 +158,8 @@ export default function CartPage() {
           </Link>
         </div>
       </div>
+      <SiteFooter />
+      <MobileBottomNav />
     </div>
   );
 }

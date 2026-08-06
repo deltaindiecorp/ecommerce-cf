@@ -4,6 +4,9 @@ import { useLoaderData, useActionData, Form, useNavigation, Link } from "@remix-
 import { useState } from "react";
 
 import { API_BASE } from "~/lib/config";
+import { SiteHeader } from "~/components/SiteHeader";
+import { SiteFooter } from "~/components/SiteFooter";
+import { MobileBottomNav } from "~/components/MobileBottomNav";
 
 export async function loader({ params }: LoaderFunctionArgs) {
   const res = await fetch(`${API_BASE}/api/catalog/products/${params.slug}`);
@@ -58,9 +61,10 @@ export default function ProductDetailPage() {
   }
 
   return (
-    <div className="min-h-screen bg-white">
+    <div className="min-h-screen bg-white flex flex-col pb-16 md:pb-0">
+      <SiteHeader />
       {/* Breadcrumb */}
-      <div className="max-w-4xl mx-auto px-4 py-4 text-sm text-gray-400">
+      <div className="max-w-4xl mx-auto px-4 py-4 text-sm text-gray-400 w-full">
         <Link to="/" className="hover:text-blue-600">Beranda</Link>
         <span className="mx-2">/</span>
         {product.category && (
@@ -74,7 +78,7 @@ export default function ProductDetailPage() {
         <span className="text-gray-700">{product.name}</span>
       </div>
 
-      <div className="max-w-4xl mx-auto px-4 pb-12">
+      <div className="flex-1 max-w-4xl mx-auto px-4 pb-12 w-full">
         <div className="grid md:grid-cols-2 gap-8">
           {/* Images */}
           <div className="aspect-square bg-gray-100 rounded-xl overflow-hidden">
@@ -167,6 +171,8 @@ export default function ProductDetailPage() {
           </div>
         </div>
       </div>
+      <SiteFooter />
+      <MobileBottomNav />
     </div>
   );
 }

@@ -4,6 +4,9 @@ import { json } from "@remix-run/cloudflare";
 import type { ApiResponse } from "@repo/shared";
 
 import { API_BASE } from "~/lib/config";
+import { SiteHeader } from "~/components/SiteHeader";
+import { SiteFooter } from "~/components/SiteFooter";
+import { MobileBottomNav } from "~/components/MobileBottomNav";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const url      = new URL(request.url);
@@ -29,7 +32,9 @@ export default function TrackPage() {
   const { tracking, resi } = useLoaderData<typeof loader>();
 
   return (
-    <div className="max-w-xl mx-auto p-6">
+    <div className="min-h-screen bg-gray-50 flex flex-col pb-16 md:pb-0">
+      <SiteHeader />
+      <div className="flex-1 max-w-xl mx-auto p-6 w-full">
       <h1 className="text-2xl font-bold mb-6">Cek Resi / Tracking Order</h1>
 
       {/* Search Form */}
@@ -93,6 +98,9 @@ export default function TrackPage() {
       {(tracking && !tracking.success) || (resi && !resi.success) ? (
         <p className="text-gray-500 text-center mt-8">Data tidak ditemukan.</p>
       ) : null}
+      </div>
+      <SiteFooter />
+      <MobileBottomNav />
     </div>
   );
 }

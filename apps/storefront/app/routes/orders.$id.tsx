@@ -3,6 +3,9 @@ import { json } from "@remix-run/cloudflare";
 import { useLoaderData, Link } from "@remix-run/react";
 
 import { API_BASE } from "~/lib/config";
+import { SiteHeader } from "~/components/SiteHeader";
+import { SiteFooter } from "~/components/SiteFooter";
+import { MobileBottomNav } from "~/components/MobileBottomNav";
 const STATUS_ICON: Record<string, string> = {
   pending_payment: "⏳",
   paid:            "✅",
@@ -45,11 +48,16 @@ export default function OrderDetailPage() {
 
   if (error || !order) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <p className="text-gray-500 mb-4">Pesanan tidak ditemukan atau akses ditolak.</p>
-          <Link to="/track" className="text-blue-600 text-sm">Cek via nomor resi</Link>
+      <div className="min-h-screen bg-gray-50 flex flex-col pb-16 md:pb-0">
+        <SiteHeader />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center">
+            <p className="text-gray-500 mb-4">Pesanan tidak ditemukan atau akses ditolak.</p>
+            <Link to="/track" className="text-blue-600 text-sm">Cek via nomor resi</Link>
+          </div>
         </div>
+        <SiteFooter />
+        <MobileBottomNav />
       </div>
     );
   }
@@ -58,8 +66,9 @@ export default function OrderDetailPage() {
   const currentIdx  = statusSteps.indexOf(order.status);
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-2xl mx-auto px-4 py-8">
+    <div className="min-h-screen bg-gray-50 flex flex-col pb-16 md:pb-0">
+      <SiteHeader />
+      <div className="flex-1 max-w-2xl mx-auto px-4 py-8 w-full">
         <div className="flex items-center gap-3 mb-6">
           <Link to="/" className="text-gray-400 hover:text-gray-600 text-sm">← Beranda</Link>
           <h1 className="text-xl font-bold">Detail Pesanan</h1>
@@ -175,6 +184,8 @@ export default function OrderDetailPage() {
           </div>
         </div>
       </div>
+      <SiteFooter />
+      <MobileBottomNav />
     </div>
   );
 }
