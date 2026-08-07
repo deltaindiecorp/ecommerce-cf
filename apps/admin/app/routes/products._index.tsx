@@ -1,11 +1,19 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/cloudflare";
 import { json, redirect } from "@remix-run/cloudflare";
-import { useLoaderData, useActionData, Form, useNavigation } from "@remix-run/react";
+import { useLoaderData, useActionData, Form, Link, useNavigation } from "@remix-run/react";
 
 import { API_BASE } from "~/lib/config";
 
 function getToken(r: Request) {
   return r.headers.get("Cookie")?.match(/admin_token=([^;]+)/)?.[1] ?? "";
+}
+
+// Margin kotor per produk. Mengembalikan null kalau modal belum diisi — sengaja
+// tidak diperlakukan sebagai 0, karena "modal belum diketahui" dan "margin 100%"
+// adalah dua hal yang sangat berbeda buat pemilik toko.
+function grossMarginPct(price?: number | null, cost?: number | null): number | null {
+  if (cost == null || !price) return null;
+  return Math.round(((price - cost) / price) * 100);
 }
 
 const STATUS_LABEL: Record<string, string> = { active: "Aktif", draft: "Draft", archived: "Arsip" };
@@ -45,6 +53,9 @@ export async function action({ request }: ActionFunctionArgs) {
       sku:         formData.get("sku"),
       description: formData.get("description") || undefined,
       price:       Number(formData.get("price")),
+      // Kosong dibiarkan undefined (bukan 0) supaya "belum diisi" tetap bisa
+      // dibedakan dari "modalnya memang nol" saat menghitung margin.
+      costPrice:   formData.get("costPrice") ? Number(formData.get("costPrice")) : undefined,
       weight:      Number(formData.get("weight") || 0),
       images:      formData.get("imageUrl") ? [String(formData.get("imageUrl"))] : [],
       status:      formData.get("status") || "draft",
@@ -109,8 +120,15 @@ export default function ProductsPage() {
             </select>
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Harga (Rp)</label>
+            <label className="block text-xs text-gray-500 mb-1">Harga Jual (Rp)</label>
             <input name="price" type="number" min={0} required className="w-full border rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">
+              Harga Modal (Rp) <span className="text-gray-400">— opsional</span>
+            </label>
+            <input name="costPrice" type="number" min={0} placeholder="Kosongkan jika belum tahu" className="w-full border rounded-lg px-3 py-2 text-sm" />
+            <p className="text-[11px] text-gray-400 mt-1">Dipakai menghitung margin. Tidak pernah tampil di storefront.</p>
           </div>
           <div>
             <label className="block text-xs text-gray-500 mb-1">Berat (gram)</label>
@@ -156,13 +174,14 @@ export default function ProductsPage() {
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Nama</th>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">SKU</th>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Harga</th>
+              <th className="text-left px-4 py-3 font-semibold text-gray-600">Margin</th>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Status</th>
               <th className="px-4 py-3" />
             </tr>
           </thead>
           <tbody className="divide-y">
             {products.length === 0 ? (
-              <tr><td colSpan={5} className="text-center py-10 text-gray-400">Belum ada produk</td></tr>
+              <tr><td colSpan={6} className="text-center py-10 text-gray-400">Belum ada produk</td></tr>
             ) : (
               products.map((p: any) => (
                 <tr key={p.id} className="hover:bg-gray-50">
@@ -171,13 +190,36 @@ export default function ProductsPage() {
                     <p className="text-xs text-gray-400">{p.category?.name ?? "Tanpa kategori"}</p>
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-gray-600">{p.sku}</td>
-                  <td className="px-4 py-3 text-gray-800">Rp {p.price?.toLocaleString("id-ID")}</td>
+                  <td className="px-4 py-3 text-gray-800">
+                    <p>Rp {p.price?.toLocaleString("id-ID")}</p>
+                    <p className="text-xs text-gray-400">
+                      {p.costPrice != null
+                        ? `Modal Rp ${p.costPrice.toLocaleString("id-ID")}`
+                        : "Modal belum diisi"}
+                    </p>
+                  </td>
+                  <td className="px-4 py-3">
+                    {(() => {
+                      const margin = grossMarginPct(p.price, p.costPrice);
+                      if (margin == null) return <span className="text-xs text-gray-300">—</span>;
+                      return (
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                          margin < 0 ? "bg-red-100 text-red-700"
+                          : margin < 15 ? "bg-yellow-100 text-yellow-700"
+                          : "bg-green-100 text-green-700"
+                        }`}>
+                          {margin}%
+                        </span>
+                      );
+                    })()}
+                  </td>
                   <td className="px-4 py-3">
                     <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLOR[p.status] ?? "bg-gray-100"}`}>
                       {STATUS_LABEL[p.status] ?? p.status}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right space-x-2">
+                    <Link to={`/products/${p.id}`} className="text-blue-600 hover:underline text-xs">Edit</Link>
                     {p.status !== "active" && (
                       <Form method="post" className="inline">
                         <input type="hidden" name="intent" value="update_status" />

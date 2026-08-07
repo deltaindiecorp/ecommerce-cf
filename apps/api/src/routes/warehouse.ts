@@ -5,7 +5,7 @@ import { createD1Client } from "@repo/db";
 import { warehouses, inventory, warehouseTransfers, inventoryMovements } from "@repo/db/schema";
 import { eq, and, sql } from "drizzle-orm";
 import { createId } from "@repo/db";
-import { inventoryAdjustSchema } from "@repo/shared";
+import { inventoryAdjustSchema, warehouseInputSchema, warehouseUpdateSchema } from "@repo/shared";
 
 export const warehouseRouter = new Hono<{ Bindings: Env }>();
 
@@ -14,6 +14,79 @@ warehouseRouter.get("/", requireAdmin, async (c) => {
   const db   = createD1Client(c.env.DB);
   const rows = await db.select().from(warehouses).orderBy(warehouses.priority);
   return c.json({ success: true, data: rows });
+});
+
+// ─── POST /api/warehouse ──────────────────────────────────────────────────────
+// Sebelumnya gudang cuma bisa lahir dari seed.sql / SQL manual, jadi tiap klien
+// baru butuh intervensi DB sebelum bisa berjualan.
+warehouseRouter.post("/", requireAdmin, async (c) => {
+  const parsed = warehouseInputSchema.safeParse(await c.req.json());
+  if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
+
+  const db = createD1Client(c.env.DB);
+
+  const existing = await db.query.warehouses.findFirst({
+    where: eq(warehouses.code, parsed.data.code),
+  });
+  if (existing) return c.json({ success: false, error: `Kode gudang "${parsed.data.code}" sudah dipakai` }, 409);
+
+  const id = createId();
+  await db.insert(warehouses).values({ id, ...parsed.data });
+
+  return c.json({ success: true, data: { id } }, 201);
+});
+
+// ─── PATCH /api/warehouse/:id ─────────────────────────────────────────────────
+warehouseRouter.patch("/:id", requireAdmin, async (c) => {
+  const parsed = warehouseUpdateSchema.safeParse(await c.req.json());
+  if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
+
+  const db = createD1Client(c.env.DB);
+  const id = c.req.param("id");
+
+  const current = await db.query.warehouses.findFirst({ where: eq(warehouses.id, id) });
+  if (!current) return c.json({ success: false, error: "Gudang tidak ditemukan" }, 404);
+
+  // Kode gudang unique — cek dulu supaya balasannya jelas, bukan error constraint
+  if (parsed.data.code && parsed.data.code !== current.code) {
+    const clash = await db.query.warehouses.findFirst({ where: eq(warehouses.code, parsed.data.code) });
+    if (clash) return c.json({ success: false, error: `Kode gudang "${parsed.data.code}" sudah dipakai` }, 409);
+  }
+
+  await db.update(warehouses).set(parsed.data).where(eq(warehouses.id, id));
+
+  return c.json({ success: true });
+});
+
+// ─── DELETE /api/warehouse/:id ────────────────────────────────────────────────
+// Soft delete (is_active = false). Hard delete dilarang: inventory, order_items,
+// shipments, inventory_movements, dan warehouse_transfers semuanya menunjuk ke
+// baris ini — menghapusnya akan memutus histori order. Gudang nonaktif otomatis
+// tidak dipakai routing checkout karena difilter eq(isActive, true) di sana.
+warehouseRouter.delete("/:id", requireAdmin, async (c) => {
+  const db = createD1Client(c.env.DB);
+  const id = c.req.param("id");
+
+  const current = await db.query.warehouses.findFirst({ where: eq(warehouses.id, id) });
+  if (!current) return c.json({ success: false, error: "Gudang tidak ditemukan" }, 404);
+
+  // Stok tersisa jadi tidak terjangkau kalau gudangnya dimatikan — tolak dan
+  // minta admin memindahkannya dulu lewat transfer, daripada diam-diam hilang.
+  const leftover = await db.select({ total: sql<number>`COALESCE(SUM(qty_on_hand), 0)` })
+    .from(inventory)
+    .where(eq(inventory.warehouseId, id));
+
+  const remaining = leftover[0]?.total ?? 0;
+  if (remaining > 0) {
+    return c.json({
+      success: false,
+      error: `Gudang masih menyimpan ${remaining} unit stok. Pindahkan dulu lewat transfer sebelum dinonaktifkan.`,
+    }, 409);
+  }
+
+  await db.update(warehouses).set({ isActive: false }).where(eq(warehouses.id, id));
+
+  return c.json({ success: true });
 });
 
 // ─── GET /api/warehouse/:id/inventory ────────────────────────────────────────
