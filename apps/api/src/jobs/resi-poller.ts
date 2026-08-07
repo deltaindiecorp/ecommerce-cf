@@ -3,6 +3,7 @@ import { createD1Client } from "@repo/db";
 import { shipments, orders } from "@repo/db/schema";
 import { eq, inArray } from "drizzle-orm";
 import { KV_KEYS, KV_TTL } from "@repo/shared";
+import { deductOrderStock } from "../services/inventory";
 
 // Dipanggil oleh Cron Trigger */30 * * * *
 export async function pollActiveShipments(env: Env) {
@@ -90,6 +91,11 @@ export async function processResiPoll(
         await db.update(orders)
           .set({ status: "delivered", updatedAt: new Date() })
           .where(eq(orders.id, orderId));
+
+        // Jaring pengaman: kalau order sampai "delivered" tanpa pernah lewat
+        // input resi manual, stoknya belum pernah dipotong. Idempoten, jadi
+        // tidak dobel kalau sudah dipotong saat shipped.
+        await deductOrderStock(db, orderId);
 
         await env.NOTIFICATION_QUEUE.send({ type: "order_delivered", orderId, trackingNo });
       }

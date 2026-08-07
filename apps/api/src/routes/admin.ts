@@ -5,7 +5,8 @@ import { createD1Client } from "@repo/db";
 import { orders, shipments, products } from "@repo/db/schema";
 import { eq, desc, like, and, sql, count } from "drizzle-orm";
 import { createId } from "@repo/db";
-import { paginationSchema } from "@repo/shared";
+import { paginationSchema, isFulfilledStatus } from "@repo/shared";
+import { deductOrderStock } from "../services/inventory";
 
 export const adminRouter = new Hono<{ Bindings: Env }>();
 
@@ -157,11 +158,19 @@ adminRouter.get("/orders/:id", requireAdmin, async (c) => {
 // ─── PATCH /api/admin/orders/:id/status ───────────────────────────────────────
 adminRouter.patch("/orders/:id/status", requireAdmin, async (c) => {
   const { status, note } = await c.req.json<{ status: string; note?: string }>();
-  const db = createD1Client(c.env.DB);
+  const db      = createD1Client(c.env.DB);
+  const orderId = c.req.param("id");
 
   await db.update(orders)
     .set({ status: status as any, adminNote: note, updatedAt: new Date() })
-    .where(eq(orders.id, c.req.param("id")));
+    .where(eq(orders.id, orderId));
+
+  // Barang keluar gudang begitu order masuk status terpenuhi — konversi
+  // reservasi jadi pengurangan stok riil. deductOrderStock idempoten per item,
+  // jadi aman kalau status di-set bolak-balik atau jalur lain sudah memotong.
+  if (isFulfilledStatus(status)) {
+    await deductOrderStock(db, orderId);
+  }
 
   return c.json({ success: true });
 });
@@ -189,6 +198,9 @@ adminRouter.post("/orders/:id/shipment", requireAdmin, async (c) => {
     await db.update(orders)
       .set({ status: "shipped", updatedAt: new Date() })
       .where(eq(orders.id, c.req.param("id")));
+
+    // Resi terisi = barang diserahkan ke kurir, stok fisik keluar gudang
+    await deductOrderStock(db, c.req.param("id"));
 
     // Enqueue resi polling
     await c.env.RESI_POLL_QUEUE.send({ type: "shipment_created", shipmentId, trackingNo, courier });

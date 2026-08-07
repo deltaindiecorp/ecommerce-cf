@@ -33,6 +33,18 @@ export const ORDER_STATUS_LABEL: Record<string, string> = {
   refunded:        "Dikembalikan",
 };
 
+// ─── Order Fulfillment ────────────────────────────────────────────────────────
+// Status yang berarti barang sudah keluar fisik dari gudang. Begitu order masuk
+// salah satu status ini, reservasi stok dikonversi jadi pengurangan stok riil
+// (lihat deductOrderStock di apps/api/src/services/inventory.ts). Sengaja dipisah
+// dari ORDER_STATUS_LABEL supaya logika stok tidak ikut berubah kalau teks
+// tampilannya diubah.
+export const FULFILLED_STATUSES = ["shipped", "delivered", "completed"] as const;
+
+export function isFulfilledStatus(status: string): boolean {
+  return (FULFILLED_STATUSES as readonly string[]).includes(status);
+}
+
 // ─── Courier List ─────────────────────────────────────────────────────────────
 export const COURIERS = [
   { code: "jne",     name: "JNE" },
