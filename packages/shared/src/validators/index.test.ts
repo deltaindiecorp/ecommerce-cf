@@ -10,6 +10,9 @@ import {
   variantInputSchema,
   inventoryAdjustSchema,
   voucherInputSchema,
+  variantUpdateSchema,
+  warehouseInputSchema,
+  warehouseUpdateSchema,
 } from "./index";
 
 describe("shippingAddressSchema", () => {
@@ -151,6 +154,33 @@ describe("productInputSchema", () => {
   it("productUpdateSchema (partial) menerima objek kosong", () => {
     expect(productUpdateSchema.safeParse({}).success).toBe(true);
   });
+
+  it("menerima costPrice 0 — modal nol itu sah", () => {
+    const result = productInputSchema.safeParse({ ...base, costPrice: 0 });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.costPrice).toBe(0);
+  });
+
+  it("menolak costPrice negatif", () => {
+    expect(productInputSchema.safeParse({ ...base, costPrice: -1 }).success).toBe(false);
+  });
+
+  // Form edit mengirim null untuk field yang dikosongkan. Kalau schema menolak
+  // null, field nullable tidak akan pernah bisa dibersihkan lewat panel — dan
+  // kalau dikirim undefined, drizzle malah melewatinya dan nilai lama bertahan.
+  it.each(["costPrice", "comparePrice", "categoryId", "description", "metaTitle", "metaDesc"])(
+    "menerima null untuk %s supaya bisa dikosongkan lewat form edit",
+    (field) => {
+      const result = productUpdateSchema.safeParse({ [field]: null });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data[field as keyof typeof result.data]).toBeNull();
+    },
+  );
+
+  it("tetap menolak null untuk field wajib", () => {
+    expect(productUpdateSchema.safeParse({ name: null }).success).toBe(false);
+    expect(productUpdateSchema.safeParse({ price: null }).success).toBe(false);
+  });
 });
 
 describe("categoryInputSchema", () => {
@@ -165,14 +195,41 @@ describe("categoryInputSchema", () => {
 });
 
 describe("variantInputSchema", () => {
+  const base = { name: "Merah / XL", sku: "KP-001-MRH-XL" };
+
   it("menerima varian valid dengan options", () => {
-    const result = variantInputSchema.safeParse({ name: "Merah / XL", sku: "KP-001-RED-XL", options: { warna: "merah", ukuran: "XL" } });
+    const result = variantInputSchema.safeParse({ ...base, options: { warna: "merah", ukuran: "XL" } });
     expect(result.success).toBe(true);
   });
 
   it("menolak tanpa sku", () => {
     expect(variantInputSchema.safeParse({ name: "Merah / XL" }).success).toBe(false);
   });
+
+  it("menolak name kosong", () => {
+    expect(variantInputSchema.safeParse({ ...base, name: "" }).success).toBe(false);
+  });
+
+  it("menerima varian minimal — harga/berat boleh ikut produk induk", () => {
+    const result = variantInputSchema.safeParse(base);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.options).toEqual({});
+      expect(result.data.isActive).toBe(true);
+    }
+  });
+
+  // null di sini berarti "ikut nilai produk induk". Kalau schema menolak null,
+  // varian yang sudah punya harga sendiri tidak akan pernah bisa dikembalikan
+  // untuk mengikuti produk lewat form edit.
+  it.each(["price", "costPrice", "weight", "imageUrl"])(
+    "menerima null untuk %s supaya bisa dikembalikan mengikuti produk induk",
+    (field) => {
+      const result = variantUpdateSchema.safeParse({ [field]: null });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data[field as keyof typeof result.data]).toBeNull();
+    },
+  );
 });
 
 describe("inventoryAdjustSchema", () => {
@@ -211,5 +268,45 @@ describe("voucherInputSchema", () => {
     const result = voucherInputSchema.parse(base);
     expect(result.minPurchase).toBe(0);
     expect(result.isActive).toBe(true);
+  });
+});
+
+
+describe("warehouseInputSchema", () => {
+  const base = {
+    name: "Gudang Jakarta", code: "JKT",
+    address: "Jl. Mangga Dua No. 1", city: "Jakarta Pusat", province: "DKI Jakarta",
+    postalCode: "10730", rajaongkirCityId: 152,
+  };
+
+  it("menerima gudang valid dan memberi default priority 1 + aktif", () => {
+    const result = warehouseInputSchema.safeParse(base);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.priority).toBe(1);
+      expect(result.data.isActive).toBe(true);
+    }
+  });
+
+  it("menolak kode gudang huruf kecil atau berspasi", () => {
+    expect(warehouseInputSchema.safeParse({ ...base, code: "jkt" }).success).toBe(false);
+    expect(warehouseInputSchema.safeParse({ ...base, code: "JKT PUSAT" }).success).toBe(false);
+  });
+
+  it("menolak kode pos yang bukan 5 angka", () => {
+    expect(warehouseInputSchema.safeParse({ ...base, postalCode: "1073" }).success).toBe(false);
+  });
+
+  it("menolak rajaongkirCityId kosong atau nol", () => {
+    expect(warehouseInputSchema.safeParse({ ...base, rajaongkirCityId: 0 }).success).toBe(false);
+  });
+
+  it("menolak priority di bawah 1", () => {
+    expect(warehouseInputSchema.safeParse({ ...base, priority: 0 }).success).toBe(false);
+  });
+
+  it("warehouseUpdateSchema menerima perubahan sebagian", () => {
+    expect(warehouseUpdateSchema.safeParse({ priority: 3 }).success).toBe(true);
+    expect(warehouseUpdateSchema.safeParse({ isActive: false }).success).toBe(true);
   });
 });

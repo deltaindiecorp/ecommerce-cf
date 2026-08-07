@@ -4,10 +4,10 @@ import { optionalAuth } from "../middleware/auth";
 import { checkoutSchema, KV_KEYS, KV_TTL } from "@repo/shared";
 import type { Cart } from "@repo/shared";
 import { createD1Client } from "@repo/db";
-import { orders, orderItems, inventory, inventoryMovements, warehouses } from "@repo/db/schema";
-import { eq, and, sql } from "drizzle-orm";
+import { orders, orderItems, inventory, inventoryMovements, warehouses, products, productVariants } from "@repo/db/schema";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import { generateOrderNo, createId } from "@repo/db";
-import { reserveStockLock, releaseStockLock } from "../services/inventory";
+import { reserveStockLock, releaseStockLock, inventoryRowFilter } from "../services/inventory";
 import { checkVoucher, incrementVoucherUsage } from "../services/voucher";
 
 export const checkoutRouter = new Hono<{ Bindings: Env }>();
@@ -128,6 +128,35 @@ checkoutRouter.post("/", optionalAuth, async (c) => {
     customerNote:    data.note ?? null,
   });
 
+  // ─── Snapshot Harga Modal ──────────────────────────────────────────────────
+  // Diambil dari DB saat checkout, bukan dibawa lewat cart: cart tersimpan di KV
+  // dan ikut dikirim ke browser pembeli, jadi harga modal tidak boleh lewat
+  // sana. Nilai yang benar juga nilai saat order dibuat — modal berubah tiap
+  // restock, dan tanpa snapshot ini margin historis tidak bisa dihitung ulang.
+  const cartProductIds = [...new Set(assignedItems.map(i => i.productId))];
+  const cartVariantIds = [...new Set(
+    assignedItems.map(i => i.variantId).filter((v): v is string => Boolean(v))
+  )];
+
+  const [costProductRows, costVariantRows] = await Promise.all([
+    db.select({ id: products.id, costPrice: products.costPrice })
+      .from(products).where(inArray(products.id, cartProductIds)),
+    cartVariantIds.length
+      ? db.select({ id: productVariants.id, costPrice: productVariants.costPrice })
+          .from(productVariants).where(inArray(productVariants.id, cartVariantIds))
+      : Promise.resolve([] as Array<{ id: string; costPrice: number | null }>),
+  ]);
+
+  const productCost = new Map(costProductRows.map(r => [r.id, r.costPrice]));
+  const variantCost = new Map(costVariantRows.map(r => [r.id, r.costPrice]));
+
+  // Varian boleh override modal produk. Pakai ?? (bukan ||) supaya modal 0 yang
+  // memang disetel tidak jatuh ke fallback. NULL = produk belum diisi modalnya.
+  function costSnapshotFor(productId: string, variantId?: string): number | null {
+    const fromVariant = variantId ? variantCost.get(variantId) : null;
+    return fromVariant ?? productCost.get(productId) ?? null;
+  }
+
   // ─── Insert Order Items + Reserve Stock ────────────────────────────────────
   for (const item of assignedItems) {
     await db.insert(orderItems).values({
@@ -141,19 +170,16 @@ checkoutRouter.post("/", optionalAuth, async (c) => {
       sku:            item.sku,
       imageUrl:       item.imageUrl ?? null,
       priceSnapshot:  item.price,
+      costSnapshot:   costSnapshotFor(item.productId, item.variantId),
       weightSnapshot: item.weight,
       qty:            item.qty,
       subtotal:       item.subtotal,
     });
 
-    // Reserve stok
+    // Reserve stok — filter baris pakai helper yang sama dengan release/deduct
     await db.update(inventory)
       .set({ qtyReserved: sql`qty_reserved + ${item.qty}`, updatedAt: new Date() })
-      .where(and(
-        eq(inventory.warehouseId, item.warehouseId),
-        eq(inventory.productId, item.productId),
-        ...(item.variantId ? [eq(inventory.variantId, item.variantId)] : [])
-      ));
+      .where(inventoryRowFilter(item.warehouseId, item.productId, item.variantId));
 
     // Log movement
     await db.insert(inventoryMovements).values({

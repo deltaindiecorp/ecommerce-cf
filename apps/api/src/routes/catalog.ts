@@ -13,6 +13,54 @@ import { requireAdmin } from "../middleware/auth";
 
 export const catalogRouter = new Hono<{ Bindings: Env }>();
 
+// ─── Proyeksi kolom publik ────────────────────────────────────────────────────
+// Endpoint katalog dikonsumsi storefront dan hasilnya ikut di-cache ke KV, jadi
+// kolomnya HARUS disebut eksplisit — bukan `select()` polos. `costPrice` adalah
+// data bisnis internal; kalau ikut terkirim, margin tiap produk bisa di-scrape
+// siapa pun. Kolom baru yang sensitif cukup tidak didaftarkan di sini.
+// Kolom yang TIDAK boleh keluar ke publik. Daftar ini diuji di catalog.test.ts:
+// begitu ada kolom baru di schema yang tidak masuk daftar publik maupun daftar
+// ini, test gagal — jadi penambah kolom dipaksa memilih secara sadar.
+export const INTERNAL_PRODUCT_COLUMNS = ["costPrice"] as const;
+export const INTERNAL_VARIANT_COLUMNS = ["costPrice"] as const;
+
+export const PUBLIC_PRODUCT_COLUMNS = {
+  id: true, categoryId: true, name: true, slug: true, sku: true,
+  description: true, price: true, comparePrice: true,
+  weight: true, width: true, height: true, length: true,
+  images: true, tags: true, status: true, isFeatured: true,
+  metaTitle: true, metaDesc: true, createdAt: true, updatedAt: true,
+} as const;
+
+export const PUBLIC_VARIANT_COLUMNS = {
+  id: true, productId: true, name: true, sku: true,
+  price: true, weight: true, options: true, imageUrl: true,
+  isActive: true, createdAt: true,
+} as const;
+
+export const publicProductSelect = {
+  id:           products.id,
+  categoryId:   products.categoryId,
+  name:         products.name,
+  slug:         products.slug,
+  sku:          products.sku,
+  description:  products.description,
+  price:        products.price,
+  comparePrice: products.comparePrice,
+  weight:       products.weight,
+  width:        products.width,
+  height:       products.height,
+  length:       products.length,
+  images:       products.images,
+  tags:         products.tags,
+  status:       products.status,
+  isFeatured:   products.isFeatured,
+  metaTitle:    products.metaTitle,
+  metaDesc:     products.metaDesc,
+  createdAt:    products.createdAt,
+  updatedAt:    products.updatedAt,
+};
+
 // ─── GET /api/catalog/products ────────────────────────────────────────────────
 catalogRouter.get("/products", async (c) => {
   const query  = c.req.query();
@@ -28,7 +76,7 @@ catalogRouter.get("/products", async (c) => {
   if (featured) conditions.push(eq(products.isFeatured, true));
 
   const [rows, countRow] = await Promise.all([
-    db.select().from(products).where(and(...conditions)).limit(limit).offset(offset),
+    db.select(publicProductSelect).from(products).where(and(...conditions)).limit(limit).offset(offset),
     db.select({ count: sql<number>`count(*)` }).from(products).where(and(...conditions)),
   ]);
 
@@ -50,8 +98,12 @@ catalogRouter.get("/products/:slug", async (c) => {
 
   const db      = createD1Client(c.env.DB);
   const product = await db.query.products.findFirst({
-    where: and(eq(products.slug, slug), eq(products.status, "active")),
-    with:  { variants: { where: eq(productVariants.isActive, true) }, category: true },
+    where:   and(eq(products.slug, slug), eq(products.status, "active")),
+    columns: PUBLIC_PRODUCT_COLUMNS,
+    with:    {
+      variants: { where: eq(productVariants.isActive, true), columns: PUBLIC_VARIANT_COLUMNS },
+      category: true,
+    },
   });
 
   if (!product) return c.json({ success: false, error: "Produk tidak ditemukan" }, 404);

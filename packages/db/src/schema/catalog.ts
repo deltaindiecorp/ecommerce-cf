@@ -55,6 +55,11 @@ export const products = sqliteTable("products", {
   description: text("description"),
   price:       integer("price").notNull(), // dalam rupiah (sen)
   comparePrice:integer("compare_price"),   // harga coret
+  // Harga modal / HPP. Nullable disengaja: NULL = "belum diisi", berbeda dari 0
+  // yang berarti "modalnya memang nol". Kalau dibuat NOT NULL DEFAULT 0, semua
+  // produk lama akan terbaca bermargin 100%. JANGAN pernah dikirim ke endpoint
+  // publik — lihat proyeksi kolom di routes/catalog.ts.
+  costPrice:   integer("cost_price"),
   weight:      integer("weight").notNull().default(0), // gram
   width:       integer("width").default(0),  // cm
   height:      integer("height").default(0),
@@ -76,6 +81,7 @@ export const productVariants = sqliteTable("product_variants", {
   name:      text("name").notNull(), // e.g. "Merah / XL"
   sku:       text("sku").notNull().unique(),
   price:     integer("price"),        // override harga produk
+  costPrice: integer("cost_price"),   // override harga modal produk
   weight:    integer("weight"),       // override berat
   options:   text("options", { mode: "json" }).$type<Record<string, string>>().notNull().default({}),
   imageUrl:  text("image_url"),

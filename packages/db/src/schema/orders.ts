@@ -61,6 +61,10 @@ export const orderItems = sqliteTable("order_items", {
   sku:            text("sku").notNull(),
   imageUrl:       text("image_url"),
   priceSnapshot:  integer("price_snapshot").notNull(),
+  // Harga modal SAAT order dibuat. Wajib di-snapshot seperti harga jual: modal
+  // berubah tiap restock, jadi tanpa ini margin historis tidak bisa dihitung
+  // ulang. NULL = produk belum punya harga modal saat order ini terjadi.
+  costSnapshot:   integer("cost_snapshot"),
   weightSnapshot: integer("weight_snapshot").notNull(),
   qty:            integer("qty").notNull(),
   subtotal:       integer("subtotal").notNull(),
