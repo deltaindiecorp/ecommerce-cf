@@ -40,9 +40,16 @@ export async function loader({ request }: LoaderFunctionArgs) {
   // memanggil /api-proxy/... yang tidak pernah ada — 404, error ditelan catch,
   // dan tabelnya selalu tampil kosong seolah gudangnya memang tidak berisi.
   let inventory: any[] = [];
+  let products:  any[] = [];
   if (selectedId) {
-    const invBody = await apiFetch<any[]>(request, `/api/warehouse/${selectedId}/inventory`);
-    inventory = invBody.success ? invBody.data ?? [] : [];
+    // Produk ikut dimuat supaya penambahan stok untuk produk yang BELUM ada di
+    // gudang ini bisa memakai dropdown, bukan menyuruh admin mengetik UUID.
+    const [invBody, prodBody] = await Promise.all([
+      apiFetch<any[]>(request, `/api/warehouse/${selectedId}/inventory`),
+      apiFetch<any[]>(request, "/api/admin/products?limit=100"),
+    ]);
+    inventory = invBody.success  ? invBody.data ?? []  : [];
+    products  = prodBody.success ? prodBody.data ?? [] : [];
   }
 
   // Pencarian kota RajaOngkir untuk mengisi rajaongkirCityId tanpa hafalan.
@@ -60,6 +67,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   return json({
     warehouses: warehousesBody.data ?? [],
     inventory,
+    products,
     selectedId,
     cityQuery,
     cities,
@@ -93,6 +101,21 @@ export async function action({ request }: ActionFunctionArgs) {
     // API menolak kalau masih ada stok tersisa — pesannya ditampilkan apa adanya
     if (!result.success) return json({ error: result.error, scope: "warehouse" }, { status: 400 });
     return redirect("/warehouse");
+  }
+
+  if (intent === "adjust_stock") {
+    const warehouseId = String(formData.get("warehouseId") ?? "");
+    const payload = {
+      productId: String(formData.get("productId") ?? ""),
+      variantId: optText(formData, "variantId") ?? undefined,
+      qty:       Number(formData.get("qty")),
+      note:      optText(formData, "note") ?? undefined,
+    };
+    const result = await apiFetch(request, `/api/warehouse/${warehouseId}/inventory/adjust`, {
+      method: "POST", body: JSON.stringify(payload),
+    });
+    if (!result.success) return json({ error: result.error, scope: "adjust" }, { status: 400 });
+    return redirect(`/warehouse?gudang=${warehouseId}`);
   }
 
   if (intent === "transfer") {
@@ -199,7 +222,7 @@ function WarehouseFields({ wh }: { wh?: any }) {
 }
 
 export default function WarehousePage() {
-  const { warehouses, inventory, selectedId, cityQuery, cities } = useLoaderData<typeof loader>();
+  const { warehouses, inventory, products, selectedId, cityQuery, cities } = useLoaderData<typeof loader>();
   const actionData     = useActionData<typeof action>();
   const [searchParams] = useSearchParams();
   const nav            = useNavigation();
@@ -211,6 +234,7 @@ export default function WarehousePage() {
 
   const whError       = actionData?.scope === "warehouse" ? actionData.error : null;
   const transferError = actionData?.scope === "transfer"  ? actionData.error : null;
+  const adjustError   = actionData?.scope === "adjust"    ? actionData.error : null;
 
   return (
     <div>
@@ -292,11 +316,12 @@ export default function WarehousePage() {
                 <th className="text-right px-4 py-3 text-gray-600 font-semibold">Bisa Dijual</th>
                 <th className="text-right px-4 py-3 text-gray-600 font-semibold">Dipesan</th>
                 <th className="text-right px-4 py-3 text-gray-600 font-semibold">Stok Fisik</th>
+                <th className="text-right px-4 py-3 text-gray-600 font-semibold">Sesuaikan</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
               {inventory.length === 0 ? (
-                <tr><td colSpan={4} className="text-center py-8 text-gray-400">Belum ada stok di gudang ini</td></tr>
+                <tr><td colSpan={5} className="text-center py-8 text-gray-400">Belum ada stok di gudang ini</td></tr>
               ) : (
                 inventory.map((inv: any) => {
                   const sellable = inv.qtyAvailable - inv.qtyReserved;
@@ -313,12 +338,77 @@ export default function WarehousePage() {
                       </td>
                       <td className="px-4 py-3 text-right text-gray-500">{inv.qtyReserved}</td>
                       <td className="px-4 py-3 text-right text-gray-700">{inv.qtyOnHand}</td>
+                      {/* Penyesuaian cepat: productId/variantId diambil dari baris,
+                          jadi admin tidak perlu tahu UUID apa pun. */}
+                      <td className="px-4 py-3">
+                        <Form method="post" className="flex items-center justify-end gap-1.5">
+                          <input type="hidden" name="intent" value="adjust_stock" />
+                          <input type="hidden" name="warehouseId" value={selectedId} />
+                          <input type="hidden" name="productId" value={inv.productId} />
+                          {inv.variantId && <input type="hidden" name="variantId" value={inv.variantId} />}
+                          <input
+                            name="qty" type="number" required placeholder="±0"
+                            className="w-20 border border-gray-200 rounded px-2 py-1 text-xs text-right"
+                          />
+                          <input
+                            name="note" placeholder="alasan"
+                            className="w-28 border border-gray-200 rounded px-2 py-1 text-xs"
+                          />
+                          <button
+                            type="submit" disabled={isSubmitting}
+                            className="bg-gray-800 text-white px-2.5 py-1 rounded text-xs font-medium hover:bg-gray-900 disabled:opacity-50"
+                          >
+                            Simpan
+                          </button>
+                        </Form>
+                      </td>
                     </tr>
                   );
                 })
               )}
             </tbody>
           </table>
+
+          <div className="border-t border-gray-100 p-5">
+            <h3 className="text-sm font-medium text-gray-600 mb-1">Stok Masuk / Opname</h3>
+            <p className="text-xs text-gray-400 mb-3">
+              Nilai positif menambah stok, negatif mengoreksi turun. Pakai ini untuk barang
+              datang dari supplier, hasil opname, atau retur yang sudah diterima kembali.
+            </p>
+            <ErrorNote error={adjustError} />
+            <Form method="post" className="grid grid-cols-12 gap-3 items-end">
+              <input type="hidden" name="intent" value="adjust_stock" />
+              <input type="hidden" name="warehouseId" value={selectedId} />
+              <div className="col-span-5">
+                <label className={LABEL}>Produk</label>
+                <select name="productId" required className={FIELD}>
+                  <option value="">Pilih produk</option>
+                  {products.map((p: any) => (
+                    <option key={p.id} value={p.id}>{p.name} · {p.sku}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="col-span-2">
+                <label className={LABEL}>Jumlah</label>
+                <input name="qty" type="number" required placeholder="cth. 50" className={FIELD} />
+              </div>
+              <div className="col-span-3">
+                <label className={LABEL}>Catatan</label>
+                <input name="note" placeholder="PO-1234 / opname Agustus" className={FIELD} />
+              </div>
+              <div className="col-span-2">
+                <button
+                  type="submit" disabled={isSubmitting}
+                  className="w-full bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+                >
+                  Simpan
+                </button>
+              </div>
+            </Form>
+            <p className="text-[11px] text-gray-400 mt-2">
+              Untuk produk bervarian, gunakan kolom &ldquo;Sesuaikan&rdquo; pada baris varian di tabel di atas.
+            </p>
+          </div>
         </div>
       )}
 
