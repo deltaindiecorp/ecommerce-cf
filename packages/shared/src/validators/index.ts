@@ -113,12 +113,36 @@ export const warehouseInputSchema = z.object({
 });
 export const warehouseUpdateSchema = warehouseInputSchema.partial();
 
+// ─── Admin: Transfer Stok Antar Gudang ────────────────────────────────────────
+export const warehouseTransferSchema = z.object({
+  fromWarehouse: z.string().uuid(),
+  toWarehouse:   z.string().uuid(),
+  productId:     z.string().uuid(),
+  // Wajib diteruskan: satu produk bisa punya baris inventory terpisah per varian,
+  // dan transfer yang mengabaikannya akan mengenai semua varian sekaligus.
+  variantId:     z.string().uuid().nullable().optional(),
+  qty:           z.number().int().positive(),
+  note:          z.string().max(200).nullable().optional(),
+}).refine(d => d.fromWarehouse !== d.toWarehouse, {
+  message: "Gudang asal dan tujuan tidak boleh sama",
+  path:    ["toWarehouse"],
+});
+
 // ─── Admin: Inventory Adjustment ───────────────────────────────────────────────
 export const inventoryAdjustSchema = z.object({
   productId: z.string().uuid(),
   variantId: z.string().uuid().optional(),
   qty:       z.number().int().refine(v => v !== 0, "qty tidak boleh 0"), // + stok masuk, - koreksi turun
   note:      z.string().max(200).optional(),
+});
+
+// ─── Admin: Status Order ──────────────────────────────────────────────────────
+export const orderStatusUpdateSchema = z.object({
+  status: z.enum([
+    "pending_payment", "paid", "processing", "packed",
+    "shipped", "delivered", "completed", "cancelled", "refunded",
+  ]),
+  note: z.string().max(500).nullable().optional(),
 });
 
 // ─── Admin: Voucher ─────────────────────────────────────────────────────────────

@@ -5,7 +5,8 @@ import { createD1Client } from "@repo/db";
 import { warehouses, inventory, warehouseTransfers, inventoryMovements } from "@repo/db/schema";
 import { eq, and, sql } from "drizzle-orm";
 import { createId } from "@repo/db";
-import { inventoryAdjustSchema, warehouseInputSchema, warehouseUpdateSchema } from "@repo/shared";
+import { inventoryAdjustSchema, warehouseInputSchema, warehouseUpdateSchema, warehouseTransferSchema } from "@repo/shared";
+import { inventoryRowFilter } from "../services/inventory";
 
 export const warehouseRouter = new Hono<{ Bindings: Env }>();
 
@@ -113,12 +114,11 @@ warehouseRouter.post("/:id/inventory/adjust", requireAdmin, async (c) => {
   const wh = await db.query.warehouses.findFirst({ where: eq(warehouses.id, warehouseId) });
   if (!wh) return c.json({ success: false, error: "Gudang tidak ditemukan" }, 404);
 
+  // Filter yang sama dengan reserve/release/deduct/transfer. Versi lama
+  // menghilangkan kondisi varian saat variantId kosong, sehingga penyesuaian
+  // untuk produk tanpa varian bisa mengenai baris varian mana pun.
   const existing = await db.query.inventory.findFirst({
-    where: and(
-      eq(inventory.warehouseId, warehouseId),
-      eq(inventory.productId, productId),
-      ...(variantId ? [eq(inventory.variantId, variantId)] : [])
-    ),
+    where: inventoryRowFilter(warehouseId, productId, variantId),
   });
 
   if (existing) {
@@ -148,23 +148,39 @@ warehouseRouter.post("/:id/inventory/adjust", requireAdmin, async (c) => {
   return c.json({ success: true });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Transfer stok antar gudang
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Invarian kolom qty yang dipegang seluruh kode ini:
+//   qtyOnHand    = barang fisik di rak
+//   qtyAvailable = bergerak seiring qtyOnHand (dua kolom ini selalu sejalan)
+//   qtyReserved  = sudah dijanjikan tapi belum keluar rak (order + transfer pending)
+//   stok bisa dijual = qtyAvailable - qtyReserved
+//
+// Transfer memakai reservasi dua tahap, sama seperti checkout: saat dibuat, stok
+// di gudang asal DIRESERVASI supaya tidak ikut terjual selagi barang menunggu
+// dikirim. Baru saat diselesaikan, reservasi itu dikonversi jadi perpindahan
+// fisik. Sebelumnya transfer pending tidak mengunci apa pun, sehingga stok yang
+// sama bisa terjual ke pembeli di tengah proses.
+
 // ─── POST /api/warehouse/transfer ────────────────────────────────────────────
 warehouseRouter.post("/transfer", requireAdmin, async (c) => {
-  const { fromWarehouse, toWarehouse, productId, variantId, qty, note } =
-    await c.req.json<{
-      fromWarehouse: string; toWarehouse: string;
-      productId: string; variantId?: string;
-      qty: number; note?: string;
-    }>();
+  const parsed = warehouseTransferSchema.safeParse(await c.req.json());
+  if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 
+  const { fromWarehouse, toWarehouse, productId, variantId, qty, note } = parsed.data;
   const db = createD1Client(c.env.DB);
 
-  // Cek stok source warehouse
+  const [src, dest] = await Promise.all([
+    db.query.warehouses.findFirst({ where: eq(warehouses.id, fromWarehouse) }),
+    db.query.warehouses.findFirst({ where: eq(warehouses.id, toWarehouse) }),
+  ]);
+  if (!src)  return c.json({ success: false, error: "Gudang asal tidak ditemukan" }, 404);
+  if (!dest) return c.json({ success: false, error: "Gudang tujuan tidak ditemukan" }, 404);
+
   const srcInv = await db.query.inventory.findFirst({
-    where: and(
-      eq(inventory.warehouseId, fromWarehouse),
-      eq(inventory.productId, productId),
-    ),
+    where: inventoryRowFilter(fromWarehouse, productId, variantId),
   });
 
   const available = (srcInv?.qtyAvailable ?? 0) - (srcInv?.qtyReserved ?? 0);
@@ -181,6 +197,18 @@ warehouseRouter.post("/transfer", requireAdmin, async (c) => {
     note: note ?? null,
   });
 
+  // Kunci stoknya selama transfer masih pending
+  await db.update(inventory)
+    .set({ qtyReserved: sql`qty_reserved + ${qty}`, updatedAt: new Date() })
+    .where(inventoryRowFilter(fromWarehouse, productId, variantId));
+
+  await db.insert(inventoryMovements).values({
+    id: createId(), warehouseId: fromWarehouse, productId,
+    variantId: variantId ?? null, type: "reserve",
+    qty, refType: "transfer", refId: transferId,
+    note: "Reservasi untuk transfer antar gudang",
+  });
+
   return c.json({ success: true, data: { transferId, status: "pending" } }, 201);
 });
 
@@ -195,48 +223,86 @@ warehouseRouter.patch("/transfer/:id/complete", requireAdmin, async (c) => {
     return c.json({ success: false, error: "Transfer tidak ditemukan atau sudah selesai" }, 404);
   }
 
-  // Kurangi stok source
-  await db.update(inventory)
-    .set({ qtyAvailable: sql`qty_available - ${transfer.qty}`, updatedAt: new Date() })
-    .where(and(
-      eq(inventory.warehouseId, transfer.fromWarehouse),
-      eq(inventory.productId, transfer.productId),
-    ));
+  const { fromWarehouse, toWarehouse, productId, variantId, qty } = transfer;
 
-  // Tambah stok destination (upsert)
+  // Gudang asal: lepas reservasi DAN kurangi stok fisik. MAX(0, ...) mencegah
+  // nilai negatif kalau ada koreksi manual di tengah jalan.
+  await db.update(inventory)
+    .set({
+      qtyReserved:  sql`MAX(0, qty_reserved - ${qty})`,
+      qtyAvailable: sql`MAX(0, qty_available - ${qty})`,
+      qtyOnHand:    sql`MAX(0, qty_on_hand - ${qty})`,
+      updatedAt:    new Date(),
+    })
+    .where(inventoryRowFilter(fromWarehouse, productId, variantId));
+
+  // Gudang tujuan: upsert baris yang tepat (per varian, bukan per produk)
   const destInv = await db.query.inventory.findFirst({
-    where: and(
-      eq(inventory.warehouseId, transfer.toWarehouse),
-      eq(inventory.productId, transfer.productId),
-    ),
+    where: inventoryRowFilter(toWarehouse, productId, variantId),
   });
 
   if (destInv) {
     await db.update(inventory)
-      .set({ qtyAvailable: destInv.qtyAvailable + transfer.qty, updatedAt: new Date() })
+      .set({
+        qtyAvailable: sql`qty_available + ${qty}`,
+        qtyOnHand:    sql`qty_on_hand + ${qty}`,
+        updatedAt:    new Date(),
+      })
       .where(eq(inventory.id, destInv.id));
   } else {
     await db.insert(inventory).values({
-      id: createId(), warehouseId: transfer.toWarehouse,
-      productId: transfer.productId, variantId: transfer.variantId,
-      qtyAvailable: transfer.qty, qtyReserved: 0, qtyOnHand: transfer.qty,
+      id: createId(), warehouseId: toWarehouse,
+      productId, variantId: variantId ?? null,
+      qtyAvailable: qty, qtyReserved: 0, qtyOnHand: qty,
     });
   }
 
-  // Log movements
   for (const [type, warehouseId] of [
-    ["transfer_out", transfer.fromWarehouse],
-    ["transfer_in",  transfer.toWarehouse],
+    ["transfer_out", fromWarehouse],
+    ["transfer_in",  toWarehouse],
   ] as const) {
     await db.insert(inventoryMovements).values({
-      id: createId(), warehouseId, productId: transfer.productId,
-      variantId: transfer.variantId, type,
-      qty: transfer.qty, refType: "transfer", refId: transfer.id,
+      id: createId(), warehouseId, productId,
+      variantId: variantId ?? null, type,
+      qty, refType: "transfer", refId: transfer.id,
     });
   }
 
   await db.update(warehouseTransfers)
     .set({ status: "completed", completedAt: new Date() })
+    .where(eq(warehouseTransfers.id, transfer.id));
+
+  return c.json({ success: true });
+});
+
+// ─── PATCH /api/warehouse/transfer/:id/cancel ─────────────────────────────────
+// Wajib ada sejak transfer pending mengunci stok: tanpa jalur ini, transfer yang
+// batal di dunia nyata akan menahan stoknya selamanya tanpa cara melepas.
+warehouseRouter.patch("/transfer/:id/cancel", requireAdmin, async (c) => {
+  const db       = createD1Client(c.env.DB);
+  const transfer = await db.query.warehouseTransfers.findFirst({
+    where: eq(warehouseTransfers.id, c.req.param("id")),
+  });
+
+  if (!transfer || transfer.status !== "pending") {
+    return c.json({ success: false, error: "Transfer tidak ditemukan atau sudah tidak pending" }, 404);
+  }
+
+  const { fromWarehouse, productId, variantId, qty } = transfer;
+
+  await db.update(inventory)
+    .set({ qtyReserved: sql`MAX(0, qty_reserved - ${qty})`, updatedAt: new Date() })
+    .where(inventoryRowFilter(fromWarehouse, productId, variantId));
+
+  await db.insert(inventoryMovements).values({
+    id: createId(), warehouseId: fromWarehouse, productId,
+    variantId: variantId ?? null, type: "release",
+    qty, refType: "transfer", refId: transfer.id,
+    note: "Transfer dibatalkan",
+  });
+
+  await db.update(warehouseTransfers)
+    .set({ status: "cancelled" })
     .where(eq(warehouseTransfers.id, transfer.id));
 
   return c.json({ success: true });
