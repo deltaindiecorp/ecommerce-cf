@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
 import { relations } from "drizzle-orm";
 import { createId } from "../utils";
 import { users } from "./catalog";
@@ -45,7 +45,17 @@ export const orders = sqliteTable("orders", {
   cancelledAt:  integer("cancelled_at", { mode: "timestamp" }),
   createdAt:    integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
   updatedAt:    integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
-});
+}, (t) => ({
+  // Rentang tanggal di /api/admin/stats/overview dan urutan default daftar
+  // pesanan admin (ORDER BY created_at DESC) tanpa filter.
+  createdAtIdx: index("orders_created_at_idx").on(t.createdAt),
+  // Daftar pesanan yang difilter status lalu diurutkan tanggal. Prefix (status)
+  // juga melayani filter status polos, jadi tidak perlu index terpisah.
+  statusCreatedAtIdx: index("orders_status_created_at_idx").on(t.status, t.createdAt),
+  // Catatan: user_id sengaja TIDAK di-index — sampai saat ini tidak ada satu
+  // query pun yang mencari order berdasarkan user. Tambahkan begitu fitur
+  // "pesanan saya" dibuat.
+}));
 
 // ─── Order Items ──────────────────────────────────────────────────────────────
 export const orderItems = sqliteTable("order_items", {
@@ -68,7 +78,11 @@ export const orderItems = sqliteTable("order_items", {
   weightSnapshot: integer("weight_snapshot").notNull(),
   qty:            integer("qty").notNull(),
   subtotal:       integer("subtotal").notNull(),
-});
+}, (t) => ({
+  // Dibaca setiap kali order di-fetch beserta relasinya, dan oleh
+  // releaseOrderStock/deductOrderStock yang memuat item per order.
+  orderIdIdx: index("order_items_order_id_idx").on(t.orderId),
+}));
 
 // ─── Payments ─────────────────────────────────────────────────────────────────
 export const payments = sqliteTable("payments", {
@@ -87,7 +101,11 @@ export const payments = sqliteTable("payments", {
   webhookPayload:text("webhook_payload", { mode: "json" }), // raw webhook simpan
   createdAt:     integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
   updatedAt:     integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
-});
+}, (t) => ({
+  orderIdIdx: index("payments_order_id_idx").on(t.orderId),
+  // Cron expirePendingPayments: WHERE status = 'pending' AND expired_at < now.
+  statusExpiredAtIdx: index("payments_status_expired_at_idx").on(t.status, t.expiredAt),
+}));
 
 // ─── Shipments ────────────────────────────────────────────────────────────────
 export const shipments = sqliteTable("shipments", {
@@ -109,7 +127,11 @@ export const shipments = sqliteTable("shipments", {
   lastChecked: integer("last_checked", { mode: "timestamp" }),
   createdAt:   integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
   updatedAt:   integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
-});
+}, (t) => ({
+  orderIdIdx: index("shipments_order_id_idx").on(t.orderId),
+  // Cron pollActiveShipments memindai status pengiriman yang masih berjalan.
+  statusIdx: index("shipments_status_idx").on(t.status),
+}));
 
 // ─── Relations ────────────────────────────────────────────────────────────────
 export const ordersRelations = relations(orders, ({ one, many }) => ({

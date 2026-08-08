@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
 import { relations } from "drizzle-orm";
 import { createId } from "../utils";
 import { products, productVariants } from "./catalog";
@@ -18,7 +18,11 @@ export const warehouses = sqliteTable("warehouses", {
   isActive:        integer("is_active", { mode: "boolean" }).notNull().default(true),
   priority:        integer("priority").notNull().default(1), // 1 = highest
   createdAt:       integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
-});
+}, (t) => ({
+  // Routing checkout: WHERE is_active = 1 ORDER BY priority. Dijalankan sekali
+  // per checkout, sebelum loop item.
+  activePriorityIdx: index("warehouses_active_priority_idx").on(t.isActive, t.priority),
+}));
 
 // ─── Inventory ────────────────────────────────────────────────────────────────
 export const inventory = sqliteTable("inventory", {
@@ -31,7 +35,18 @@ export const inventory = sqliteTable("inventory", {
   qtyOnHand:   integer("qty_on_hand").notNull().default(0),    // physical stock
   lowStockAlert:integer("low_stock_alert").notNull().default(5),
   updatedAt:   integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
-});
+}, (t) => ({
+  // Lookup terpanas di sistem: dipakai reserve saat checkout, release, deduct,
+  // dan penyesuaian stok — semuanya lewat inventoryRowFilter(). Prefix
+  // (warehouse_id) sekaligus melayani daftar inventaris per gudang dan cek
+  // sisa stok saat gudang dinonaktifkan.
+  whProductVariantIdx: index("inventory_wh_product_variant_idx")
+    .on(t.warehouseId, t.productId, t.variantId),
+  // Agregasi stok lintas gudang di halaman produk publik:
+  // WHERE product_id = ? GROUP BY variant_id. Tidak terlayani index di atas
+  // karena kolom pertamanya warehouse_id.
+  productIdIdx: index("inventory_product_id_idx").on(t.productId),
+}));
 
 // ─── Inventory Movements ──────────────────────────────────────────────────────
 export const inventoryMovements = sqliteTable("inventory_movements", {
@@ -47,7 +62,11 @@ export const inventoryMovements = sqliteTable("inventory_movements", {
   refId:       text("ref_id"),   // order_id, transfer_id
   note:        text("note"),
   createdAt:   integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
-});
+}, (t) => ({
+  // Cek idempotensi di releaseOrderStock/deductOrderStock:
+  // WHERE ref_type = 'order' AND ref_id = ? AND type = ?
+  refIdx: index("inventory_movements_ref_idx").on(t.refType, t.refId, t.type),
+}));
 
 // ─── Warehouse Transfers ──────────────────────────────────────────────────────
 export const warehouseTransfers = sqliteTable("warehouse_transfers", {
