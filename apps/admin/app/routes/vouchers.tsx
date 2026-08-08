@@ -2,26 +2,16 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/cloudfla
 import { json, redirect } from "@remix-run/cloudflare";
 import { useLoaderData, useActionData, Form, useNavigation } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
-
-function getToken(r: Request) {
-  return r.headers.get("Cookie")?.match(/admin_token=([^;]+)/)?.[1] ?? "";
-}
+import { apiFetch, formatApiError } from "~/lib/api";
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const token = getToken(request);
-  const res   = await fetch(`${API_BASE}/api/admin/vouchers?limit=50`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const body = await res.json() as any;
-  return json({ vouchers: body.success ? body.data : [] });
+  const body = await apiFetch<any[]>(request, "/api/admin/vouchers?limit=50");
+  return json({ vouchers: body.data ?? [] });
 }
 
 export async function action({ request }: ActionFunctionArgs) {
-  const token    = getToken(request);
   const formData = await request.formData();
   const intent   = formData.get("intent") as string;
-  const headers  = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
 
   if (intent === "create") {
     const payload = {
@@ -32,15 +22,17 @@ export async function action({ request }: ActionFunctionArgs) {
       maxDiscount: formData.get("maxDiscount") ? Number(formData.get("maxDiscount")) : undefined,
       usageLimit:  formData.get("usageLimit") ? Number(formData.get("usageLimit")) : undefined,
     };
-    const res    = await fetch(`${API_BASE}/api/admin/vouchers`, { method: "POST", headers, body: JSON.stringify(payload) });
-    const result = await res.json() as any;
+    const result = await apiFetch(request, "/api/admin/vouchers", {
+      method: "POST", body: JSON.stringify(payload),
+    });
     if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect("/vouchers");
   }
 
   if (intent === "deactivate") {
     const id = formData.get("id") as string;
-    await fetch(`${API_BASE}/api/admin/vouchers/${id}`, { method: "DELETE", headers });
+    const result = await apiFetch(request, `/api/admin/vouchers/${id}`, { method: "DELETE" });
+    if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect("/vouchers");
   }
 
@@ -89,8 +81,8 @@ export default function VouchersPage() {
             <input name="usageLimit" type="number" min={1} className="w-full border rounded-lg px-3 py-2 text-sm" />
           </div>
 
-          {actionData?.error && (
-            <p className="col-span-3 text-red-500 text-sm">{JSON.stringify(actionData.error)}</p>
+          {Boolean(actionData?.error) && (
+            <p className="col-span-3 text-red-500 text-sm">{formatApiError(actionData?.error)}</p>
           )}
 
           <div className="col-span-3">

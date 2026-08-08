@@ -3,22 +3,17 @@ import { json } from "@remix-run/cloudflare";
 import { useLoaderData, Link } from "@remix-run/react";
 import type { AdminStatsOverview } from "@repo/shared";
 
-import { API_BASE } from "~/lib/config";
-
-function getToken(request: Request) {
-  return request.headers.get("Cookie")?.match(/admin_token=([^;]+)/)?.[1] ?? "";
-}
+import { apiFetch } from "~/lib/api";
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const token = getToken(request);
-  const headers = { Authorization: `Bearer ${token}` };
-
-  const [statsRes, ordersRes] = await Promise.all([
-    fetch(`${API_BASE}/api/admin/stats/overview`, { headers }),
-    fetch(`${API_BASE}/api/admin/orders?limit=8`, { headers }),
+  // apiFetch melempar kalau API tak terjangkau dan mengarahkan ke /login kalau
+  // sesi habis. Sebelumnya kedua kondisi itu jatuh ke `success: false` lalu
+  // di-render sebagai Rp 0 — pemilik toko melihat "tidak ada penjualan" padahal
+  // masalahnya koneksi atau token.
+  const [statsBody, ordersBody] = await Promise.all([
+    apiFetch<AdminStatsOverview>(request, "/api/admin/stats/overview"),
+    apiFetch<any[]>(request, "/api/admin/orders?limit=8"),
   ]);
-  const statsBody  = await statsRes.json() as any;
-  const ordersBody = await ordersRes.json() as any;
 
   const lastUpdated = new Date().toLocaleString("id-ID", {
     timeZone: "Asia/Jakarta", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short",
@@ -26,7 +21,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   return json({
     stats:        (statsBody.success ? statsBody.data : null) as AdminStatsOverview | null,
-    recentOrders: ordersBody.success ? ordersBody.data : [],
+    recentOrders: ordersBody.data ?? [],
     total:        ordersBody.meta?.total ?? 0,
     lastUpdated,
   });

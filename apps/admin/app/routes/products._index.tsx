@@ -2,11 +2,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/cloudfla
 import { json, redirect } from "@remix-run/cloudflare";
 import { useLoaderData, useActionData, Form, Link, useNavigation } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
-
-function getToken(r: Request) {
-  return r.headers.get("Cookie")?.match(/admin_token=([^;]+)/)?.[1] ?? "";
-}
+import { apiFetch, apiPublic, formatApiError } from "~/lib/api";
 
 // Margin kotor per produk. Mengembalikan null kalau modal belum diisi — sengaja
 // tidak diperlakukan sebagai 0, karena "modal belum diketahui" dan "margin 100%"
@@ -24,26 +20,21 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const token = getToken(request);
-  const [productsRes, categoriesRes] = await Promise.all([
-    fetch(`${API_BASE}/api/admin/products?limit=50`, { headers: { Authorization: `Bearer ${token}` } }),
-    fetch(`${API_BASE}/api/catalog/categories`),
+  const [productsBody, categoriesBody] = await Promise.all([
+    apiFetch<any[]>(request, "/api/admin/products?limit=50"),
+    apiPublic<any[]>("/api/catalog/categories"),
   ]);
-  const productsBody   = await productsRes.json() as any;
-  const categoriesBody = await categoriesRes.json() as any;
 
   return json({
-    products:   productsBody.success ? productsBody.data : [],
+    products:   productsBody.data ?? [],
     total:      productsBody.meta?.total ?? 0,
-    categories: categoriesBody.success ? categoriesBody.data : [],
+    categories: categoriesBody.data ?? [],
   });
 }
 
 export async function action({ request }: ActionFunctionArgs) {
-  const token    = getToken(request);
   const formData = await request.formData();
   const intent   = formData.get("intent") as string;
-  const headers  = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
 
   if (intent === "create") {
     const payload = {
@@ -60,8 +51,9 @@ export async function action({ request }: ActionFunctionArgs) {
       images:      formData.get("imageUrl") ? [String(formData.get("imageUrl"))] : [],
       status:      formData.get("status") || "draft",
     };
-    const res    = await fetch(`${API_BASE}/api/catalog/products`, { method: "POST", headers, body: JSON.stringify(payload) });
-    const result = await res.json() as any;
+    const result = await apiFetch(request, "/api/catalog/products", {
+      method: "POST", body: JSON.stringify(payload),
+    });
     if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect("/products");
   }
@@ -69,13 +61,17 @@ export async function action({ request }: ActionFunctionArgs) {
   if (intent === "update_status") {
     const id     = formData.get("id") as string;
     const status = formData.get("status") as string;
-    await fetch(`${API_BASE}/api/catalog/products/${id}`, { method: "PATCH", headers, body: JSON.stringify({ status }) });
+    const result = await apiFetch(request, `/api/catalog/products/${id}`, {
+      method: "PATCH", body: JSON.stringify({ status }),
+    });
+    if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect("/products");
   }
 
   if (intent === "archive") {
     const id = formData.get("id") as string;
-    await fetch(`${API_BASE}/api/catalog/products/${id}`, { method: "DELETE", headers });
+    const result = await apiFetch(request, `/api/catalog/products/${id}`, { method: "DELETE" });
+    if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect("/products");
   }
 
@@ -150,8 +146,8 @@ export default function ProductsPage() {
             </select>
           </div>
 
-          {actionData?.error && (
-            <p className="col-span-2 text-red-500 text-sm">{JSON.stringify(actionData.error)}</p>
+          {Boolean(actionData?.error) && (
+            <p className="col-span-2 text-red-500 text-sm">{formatApiError(actionData?.error)}</p>
           )}
 
           <div className="col-span-2">

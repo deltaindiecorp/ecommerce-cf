@@ -1,28 +1,27 @@
-import { Links, Meta, Outlet, Scripts, ScrollRestoration, Link, useLocation, useLoaderData } from "@remix-run/react";
+import {
+  Links, Meta, Outlet, Scripts, ScrollRestoration, Link, useLocation, useLoaderData,
+  isRouteErrorResponse, useRouteError,
+} from "@remix-run/react";
 import type { LoaderFunctionArgs, LinksFunction } from "@remix-run/cloudflare";
 import { json, redirect } from "@remix-run/cloudflare";
 import stylesheet from "./tailwind.css?url";
 
-import { API_BASE } from "~/lib/config";
+import { apiFetch, getToken } from "~/lib/api";
 
 export const links: LinksFunction = () => [{ rel: "stylesheet", href: stylesheet }];
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const token = request.headers.get("Cookie")?.match(/admin_token=([^;]+)/)?.[1];
   const pathname = new URL(request.url).pathname;
 
   if (pathname === "/login") return json({ authenticated: false });
+  if (!getToken(request)) return redirect("/login");
 
-  if (!token) return redirect("/login");
+  // apiFetch sudah mengarahkan ke /login untuk 401/403, dan melempar ke
+  // ErrorBoundary kalau API mati — dua kondisi yang sebelumnya sama-sama
+  // berakhir sebagai redirect diam-diam ke halaman login yang membingungkan.
+  const body = await apiFetch<{ role?: string; name?: string }>(request, "/api/auth/me");
 
-  const res = await fetch(`${API_BASE}/api/auth/me`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const body = await res.json() as any;
-
-  if (!body.success || body.data?.role !== "admin") {
-    return redirect("/login");
-  }
+  if (!body.success || body.data?.role !== "admin") return redirect("/login");
 
   return json({ authenticated: true, user: body.data });
 }
@@ -117,6 +116,68 @@ export default function AdminRoot() {
         </main>
 
         <ScrollRestoration />
+        <Scripts />
+      </body>
+    </html>
+  );
+}
+
+// ─── Error Boundary ───────────────────────────────────────────────────────────
+// Sebelumnya tidak ada sama sekali, jadi kegagalan loader apa pun — API mati,
+// respons HTML alih-alih JSON, bug di route — berujung layar error bawaan Remix
+// tanpa gaya dan tanpa petunjuk. Karena ini di root, ia menangkap seluruh route
+// dan harus merender dokumen HTML utuh (tree normal sudah diganti).
+export function ErrorBoundary() {
+  const error = useRouteError();
+
+  let title  = "Terjadi kesalahan";
+  let detail = "Kesalahan tak terduga. Coba muat ulang halaman.";
+  let hint: string | null = null;
+
+  if (isRouteErrorResponse(error)) {
+    if (error.status === 404) {
+      title  = "Halaman tidak ditemukan";
+      detail = "Alamat yang dibuka tidak ada di panel admin.";
+    } else if (error.status === 502) {
+      title  = error.statusText || "API tidak terjangkau";
+      detail = typeof error.data === "string" ? error.data : "Panel tidak bisa menghubungi Worker API.";
+      hint   = "Cek apakah Worker API berjalan, lalu muat ulang.";
+    } else {
+      title  = `${error.status} ${error.statusText}`.trim();
+      detail = typeof error.data === "string" ? error.data : detail;
+    }
+  } else if (error instanceof Error) {
+    detail = error.message;
+  }
+
+  return (
+    <html lang="id">
+      <head>
+        <meta charSet="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>{title} · Admin</title>
+        <Meta />
+        <Links />
+      </head>
+      <body className="bg-gray-50 min-h-screen flex items-center justify-center p-6">
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 max-w-lg w-full p-8">
+          <p className="text-3xl mb-3">⚠️</p>
+          <h1 className="text-lg font-bold text-gray-800 mb-2">{title}</h1>
+          <p className="text-sm text-gray-600 whitespace-pre-wrap break-words">{detail}</p>
+          {hint && <p className="text-xs text-gray-400 mt-3">{hint}</p>}
+
+          <div className="flex items-center gap-3 mt-6">
+            <Link
+              to="/"
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
+            >
+              Kembali ke Dashboard
+            </Link>
+            <Link to="/login" className="text-sm text-gray-500 hover:text-gray-700">
+              Masuk ulang
+            </Link>
+          </div>
+        </div>
         <Scripts />
       </body>
     </html>

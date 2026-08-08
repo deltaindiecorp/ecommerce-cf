@@ -2,11 +2,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/cloudfla
 import { json, redirect } from "@remix-run/cloudflare";
 import { useLoaderData, useActionData, Form, Link, useNavigation, useSearchParams } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
-
-function getToken(r: Request) {
-  return r.headers.get("Cookie")?.match(/admin_token=([^;]+)/)?.[1] ?? "";
-}
+import { apiFetch, formatApiError } from "~/lib/api";
 
 function optText(fd: FormData, key: string): string | null {
   const v = String(fd.get(key) ?? "").trim();
@@ -33,37 +29,36 @@ function warehousePayload(fd: FormData) {
 }
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const token   = getToken(request);
-  const headers = { Authorization: `Bearer ${token}` };
-  const url     = new URL(request.url);
+  const url = new URL(request.url);
 
   const selectedId = url.searchParams.get("gudang") ?? "";
   const cityQuery  = url.searchParams.get("kota")   ?? "";
 
-  const warehousesRes  = await fetch(`${API_BASE}/api/warehouse`, { headers });
-  const warehousesBody = await warehousesRes.json() as any;
+  const warehousesBody = await apiFetch<any[]>(request, "/api/warehouse");
 
   // Inventaris diambil di loader, bukan fetch dari browser. Versi sebelumnya
   // memanggil /api-proxy/... yang tidak pernah ada — 404, error ditelan catch,
   // dan tabelnya selalu tampil kosong seolah gudangnya memang tidak berisi.
   let inventory: any[] = [];
   if (selectedId) {
-    const invRes  = await fetch(`${API_BASE}/api/warehouse/${selectedId}/inventory`, { headers });
-    const invBody = await invRes.json() as any;
-    inventory = invBody.success ? invBody.data : [];
+    const invBody = await apiFetch<any[]>(request, `/api/warehouse/${selectedId}/inventory`);
+    inventory = invBody.success ? invBody.data ?? [] : [];
   }
 
   // Pencarian kota RajaOngkir untuk mengisi rajaongkirCityId tanpa hafalan.
   // Butuh RAJAONGKIR_API_KEY aktif; kalau kosong hasilnya sekadar daftar kosong.
   let cities: any[] = [];
   if (cityQuery.trim().length >= 2) {
-    const cityRes  = await fetch(`${API_BASE}/api/shipping/cities?search=${encodeURIComponent(cityQuery)}`, { headers });
-    const cityBody = await cityRes.json().catch(() => ({ success: false })) as any;
-    cities = cityBody.success ? cityBody.data : [];
+    // Pencarian kota bergantung pada RajaOngkir; kegagalannya tidak boleh
+    // menjatuhkan seluruh halaman gudang, jadi ditangkap di sini.
+    const cityBody = await apiFetch<any[]>(
+      request, `/api/shipping/cities?search=${encodeURIComponent(cityQuery)}`,
+    ).catch(() => ({ success: false, data: [] as any[] }));
+    cities = cityBody.success ? cityBody.data ?? [] : [];
   }
 
   return json({
-    warehouses: warehousesBody.success ? warehousesBody.data : [],
+    warehouses: warehousesBody.data ?? [],
     inventory,
     selectedId,
     cityQuery,
@@ -72,34 +67,29 @@ export async function loader({ request }: LoaderFunctionArgs) {
 }
 
 export async function action({ request }: ActionFunctionArgs) {
-  const token    = getToken(request);
   const formData = await request.formData();
   const intent   = String(formData.get("intent") ?? "");
-  const headers  = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
 
   if (intent === "create_warehouse") {
-    const res    = await fetch(`${API_BASE}/api/warehouse`, {
-      method: "POST", headers, body: JSON.stringify(warehousePayload(formData)),
+    const result = await apiFetch(request, "/api/warehouse", {
+      method: "POST", body: JSON.stringify(warehousePayload(formData)),
     });
-    const result = await res.json() as any;
     if (!result.success) return json({ error: result.error, scope: "warehouse" }, { status: 400 });
     return redirect("/warehouse");
   }
 
   if (intent === "update_warehouse") {
     const id     = String(formData.get("warehouseId") ?? "");
-    const res    = await fetch(`${API_BASE}/api/warehouse/${id}`, {
-      method: "PATCH", headers, body: JSON.stringify(warehousePayload(formData)),
+    const result = await apiFetch(request, `/api/warehouse/${id}`, {
+      method: "PATCH", body: JSON.stringify(warehousePayload(formData)),
     });
-    const result = await res.json() as any;
     if (!result.success) return json({ error: result.error, scope: "warehouse" }, { status: 400 });
     return redirect("/warehouse");
   }
 
   if (intent === "deactivate_warehouse") {
     const id     = String(formData.get("warehouseId") ?? "");
-    const res    = await fetch(`${API_BASE}/api/warehouse/${id}`, { method: "DELETE", headers });
-    const result = await res.json() as any;
+    const result = await apiFetch(request, `/api/warehouse/${id}`, { method: "DELETE" });
     // API menolak kalau masih ada stok tersisa — pesannya ditampilkan apa adanya
     if (!result.success) return json({ error: result.error, scope: "warehouse" }, { status: 400 });
     return redirect("/warehouse");
@@ -114,19 +104,19 @@ export async function action({ request }: ActionFunctionArgs) {
       qty:           Number(formData.get("qty")),
       note:          formData.get("note") || undefined,
     };
-    const res    = await fetch(`${API_BASE}/api/warehouse/transfer`, {
-      method: "POST", headers, body: JSON.stringify(payload),
+    const result = await apiFetch(request, "/api/warehouse/transfer", {
+      method: "POST", body: JSON.stringify(payload),
     });
-    const result = await res.json() as any;
     if (!result.success) return json({ error: result.error, scope: "transfer" }, { status: 400 });
     return redirect("/warehouse");
   }
 
   if (intent === "complete_transfer") {
     const transferId = String(formData.get("transferId") ?? "");
-    await fetch(`${API_BASE}/api/warehouse/transfer/${transferId}/complete`, {
-      method: "PATCH", headers: { Authorization: `Bearer ${token}` },
+    const result = await apiFetch(request, `/api/warehouse/transfer/${transferId}/complete`, {
+      method: "PATCH",
     });
+    if (!result.success) return json({ error: result.error, scope: "warehouse" }, { status: 400 });
     return redirect("/warehouse");
   }
 
@@ -137,7 +127,7 @@ function ErrorNote({ error }: { error: unknown }) {
   if (!error) return null;
   return (
     <pre className="mb-4 text-xs bg-red-50 text-red-700 border border-red-100 rounded-lg px-4 py-2.5 whitespace-pre-wrap">
-      {typeof error === "string" ? error : JSON.stringify(error, null, 2)}
+      {formatApiError(error)}
     </pre>
   );
 }

@@ -3,11 +3,7 @@ import { json } from "@remix-run/cloudflare";
 import { useLoaderData, useActionData, Form, Link, useNavigation } from "@remix-run/react";
 import { useState } from "react";
 
-import { API_BASE } from "~/lib/config";
-
-function getToken(r: Request) {
-  return r.headers.get("Cookie")?.match(/admin_token=([^;]+)/)?.[1] ?? "";
-}
+import { apiFetch, apiPublic, formatApiError } from "~/lib/api";
 
 // ─── Pembacaan form ───────────────────────────────────────────────────────────
 // Field kosong dikirim sebagai null (bukan undefined) supaya benar-benar
@@ -83,49 +79,39 @@ function grossMarginPct(price?: number | null, cost?: number | null): number | n
 }
 
 export async function loader({ params, request }: LoaderFunctionArgs) {
-  const token   = getToken(request);
-  const headers = { Authorization: `Bearer ${token}` };
-
-  const [productRes, categoriesRes] = await Promise.all([
-    fetch(`${API_BASE}/api/admin/products/${params.id}`, { headers }),
-    fetch(`${API_BASE}/api/catalog/categories`),
+  const [productBody, categoriesBody] = await Promise.all([
+    apiFetch<any>(request, `/api/admin/products/${params.id}`),
+    apiPublic<any[]>("/api/catalog/categories"),
   ]);
-
-  const productBody    = await productRes.json() as any;
-  const categoriesBody = await categoriesRes.json() as any;
 
   if (!productBody.success) throw new Response("Produk tidak ditemukan", { status: 404 });
 
   return json({
     product:    productBody.data,
-    categories: categoriesBody.success ? categoriesBody.data : [],
+    categories: categoriesBody.data ?? [],
   });
 }
 
 export async function action({ params, request }: ActionFunctionArgs) {
-  const token    = getToken(request);
   const formData = await request.formData();
-  const headers  = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
   const intent   = String(formData.get("intent") ?? "update_product");
-  const variantsUrl = `${API_BASE}/api/catalog/products/${params.id}/variants`;
+  const variantsUrl = `/api/catalog/products/${params.id}/variants`;
 
   // `scope` dipakai UI untuk menaruh pesan di panel yang benar — error varian
   // di bagian varian, bukan di atas form produk.
   if (intent === "create_variant") {
-    const res    = await fetch(variantsUrl, {
-      method: "POST", headers, body: JSON.stringify(variantPayload(formData)),
+    const result = await apiFetch(request, variantsUrl, {
+      method: "POST", body: JSON.stringify(variantPayload(formData)),
     });
-    const result = await res.json() as any;
     if (!result.success) return json({ ok: false, error: result.error, scope: "variant" }, { status: 400 });
     return json({ ok: true, error: null, scope: "variant" });
   }
 
   if (intent === "update_variant") {
     const variantId = String(formData.get("variantId") ?? "");
-    const res    = await fetch(`${variantsUrl}/${variantId}`, {
-      method: "PATCH", headers, body: JSON.stringify(variantPayload(formData)),
+    const result = await apiFetch(request, `${variantsUrl}/${variantId}`, {
+      method: "PATCH", body: JSON.stringify(variantPayload(formData)),
     });
-    const result = await res.json() as any;
     if (!result.success) return json({ ok: false, error: result.error, scope: "variant" }, { status: 400 });
     return json({ ok: true, error: null, scope: "variant" });
   }
@@ -151,10 +137,9 @@ export async function action({ params, request }: ActionFunctionArgs) {
     metaDesc:     optText(formData, "metaDesc"),
   };
 
-  const res    = await fetch(`${API_BASE}/api/catalog/products/${params.id}`, {
-    method: "PATCH", headers, body: JSON.stringify(payload),
+  const result = await apiFetch(request, `/api/catalog/products/${params.id}`, {
+    method: "PATCH", body: JSON.stringify(payload),
   });
-  const result = await res.json() as any;
 
   if (!result.success) return json({ ok: false, error: result.error, scope: "product" }, { status: 400 });
   return json({ ok: true, error: null, scope: "product" });
@@ -204,9 +189,9 @@ export default function ProductEditPage() {
           Perubahan tersimpan.
         </p>
       )}
-      {productMsg?.error && (
+      {Boolean(productMsg?.error) && (
         <pre className="mb-4 text-xs bg-red-50 text-red-700 border border-red-100 rounded-lg px-4 py-2.5 whitespace-pre-wrap">
-          {typeof productMsg.error === "string" ? productMsg.error : JSON.stringify(productMsg.error, null, 2)}
+          {formatApiError(productMsg?.error)}
         </pre>
       )}
 
@@ -392,9 +377,9 @@ export default function ProductEditPage() {
             Varian tersimpan.
           </p>
         )}
-        {variantMsg?.error && (
+        {Boolean(variantMsg?.error) && (
           <pre className="mb-4 text-xs bg-red-50 text-red-700 border border-red-100 rounded-lg px-4 py-2.5 whitespace-pre-wrap">
-            {typeof variantMsg.error === "string" ? variantMsg.error : JSON.stringify(variantMsg.error, null, 2)}
+            {formatApiError(variantMsg?.error)}
           </pre>
         )}
 

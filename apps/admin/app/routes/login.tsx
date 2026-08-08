@@ -2,21 +2,23 @@ import type { ActionFunctionArgs } from "@remix-run/cloudflare";
 import { json, redirect } from "@remix-run/cloudflare";
 import { Form, useActionData, useNavigation } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
+import { apiPublic } from "~/lib/api";
 
 export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
   const email    = formData.get("email") as string;
   const password = formData.get("password") as string;
 
-  const res  = await fetch(`${API_BASE}/api/auth/login`, {
-    method:  "POST",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ email, password }),
-  });
+  // Sengaja apiPublic, bukan apiFetch: di halaman ini 401 berarti kredensial
+  // salah dan harus ditampilkan, bukan memicu pengalihan balik ke /login.
+  const result = await apiPublic<{ token: string; user: { role: string } }>(
+    "/api/auth/login",
+    { method: "POST", body: JSON.stringify({ email, password }) },
+  );
 
-  const result = await res.json() as any;
-  if (!result.success) return json({ error: "Email atau password salah" }, { status: 401 });
+  if (!result.success || !result.data) {
+    return json({ error: "Email atau password salah" }, { status: 401 });
+  }
 
   if (result.data.user.role !== "admin") {
     return json({ error: "Akses ditolak. Bukan akun admin." }, { status: 403 });

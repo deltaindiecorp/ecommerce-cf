@@ -2,10 +2,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/cloudfla
 import { json, redirect } from "@remix-run/cloudflare";
 import { useLoaderData, useActionData, Form, Link, useNavigation } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
-function getToken(r: Request) {
-  return r.headers.get("Cookie")?.match(/admin_token=([^;]+)/)?.[1] ?? "";
-}
+import { apiFetch, formatApiError } from "~/lib/api";
 
 const ORDER_STATUSES = [
   "pending_payment", "paid", "processing", "packed",
@@ -26,17 +23,12 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export async function loader({ params, request }: LoaderFunctionArgs) {
-  const token = getToken(request);
-  const res   = await fetch(`${API_BASE}/api/admin/orders/${params.id}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const body = await res.json() as any;
+  const body = await apiFetch<any>(request, `/api/admin/orders/${params.id}`);
   if (!body.success) throw new Response("Pesanan tidak ditemukan", { status: 404 });
   return json({ order: body.data });
 }
 
 export async function action({ params, request }: ActionFunctionArgs) {
-  const token    = getToken(request);
   const formData = await request.formData();
   const intent   = formData.get("intent") as string;
   const orderId  = params.id!;
@@ -44,22 +36,20 @@ export async function action({ params, request }: ActionFunctionArgs) {
   if (intent === "update_status") {
     const status = formData.get("status") as string;
     const note   = formData.get("note") as string;
-    await fetch(`${API_BASE}/api/admin/orders/${orderId}/status`, {
-      method:  "PATCH",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body:    JSON.stringify({ status, note: note || undefined }),
+    const result = await apiFetch(request, `/api/admin/orders/${orderId}/status`, {
+      method: "PATCH",
+      body:   JSON.stringify({ status, note: note || undefined }),
     });
+    if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect(`/orders/${orderId}`);
   }
 
   if (intent === "refund") {
     const reason = formData.get("reason") as string;
-    const res    = await fetch(`${API_BASE}/api/payment/${orderId}/refund`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body:    JSON.stringify({ reason: reason || undefined }),
+    const result = await apiFetch(request, `/api/payment/${orderId}/refund`, {
+      method: "POST",
+      body:   JSON.stringify({ reason: reason || undefined }),
     });
-    const result = await res.json() as any;
     if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect(`/orders/${orderId}`);
   }
@@ -73,12 +63,10 @@ export async function action({ params, request }: ActionFunctionArgs) {
       cost:        Number(formData.get("cost")),
       trackingNo:  formData.get("trackingNo") as string || undefined,
     };
-    const res  = await fetch(`${API_BASE}/api/admin/orders/${orderId}/shipment`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body:    JSON.stringify(payload),
+    const result = await apiFetch(request, `/api/admin/orders/${orderId}/shipment`, {
+      method: "POST",
+      body:   JSON.stringify(payload),
     });
-    const result = await res.json() as any;
     if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect(`/orders/${orderId}`);
   }
@@ -227,7 +215,7 @@ export default function OrderDetailPage() {
                   <input name="cost" type="number" placeholder="Biaya kirim" required className="border rounded-lg px-3 py-2 text-sm" />
                 </div>
                 <input name="trackingNo" placeholder="No. Resi (opsional)" className="w-full border rounded-lg px-3 py-2 text-sm" />
-                {actionData?.error && <p className="text-red-500 text-xs">{actionData.error as string}</p>}
+                {Boolean(actionData?.error) && <p className="text-red-500 text-xs">{formatApiError(actionData?.error)}</p>}
                 <button
                   type="submit"
                   disabled={isSubmitting}

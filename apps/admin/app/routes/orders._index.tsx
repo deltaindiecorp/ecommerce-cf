@@ -2,10 +2,7 @@ import type { LoaderFunctionArgs } from "@remix-run/cloudflare";
 import { json } from "@remix-run/cloudflare";
 import { useLoaderData, Link, Form, useSearchParams } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
-function getToken(r: Request) {
-  return r.headers.get("Cookie")?.match(/admin_token=([^;]+)/)?.[1] ?? "";
-}
+import { apiFetch } from "~/lib/api";
 
 const STATUS_LABEL: Record<string, string> = {
   pending_payment: "Menunggu Bayar",
@@ -31,7 +28,6 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const token  = getToken(request);
   const url    = new URL(request.url);
   const page   = url.searchParams.get("page")   ?? "1";
   const status = url.searchParams.get("status") ?? "";
@@ -39,14 +35,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const params = new URLSearchParams({ page, limit: "20" });
   if (status) params.set("status", status);
 
-  const res  = await fetch(`${API_BASE}/api/admin/orders?${params}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const body = await res.json() as any;
+  const body = await apiFetch<any[]>(request, `/api/admin/orders?${params}`);
 
   return json({
-    orders:  body.success ? body.data  : [],
-    meta:    body.success ? body.meta  : { page: 1, limit: 20, total: 0 },
+    orders:  body.data ?? [],
+    meta:    body.meta ?? { page: 1, limit: 20, total: 0 },
     status,
   });
 }
