@@ -1,0 +1,12 @@
+# Konfigurasi Cloudflare Pages untuk storefront.
+#
+# `name` = nama project Pages. Ganti per klien saat deploy, sama seperti `name`
+# di apps/api/wrangler.toml. Tanpa file ini, `wrangler pages deploy` menanyakan
+# nama project secara interaktif dan gagal di CI.
+#
+# `pages_build_output_dir` menunjuk hasil `remix vite:build`. Aset statis ada di
+# build/client, sedangkan build/server dipakai oleh functions/[[path]].ts.
+name                   = "ecommerce-storefront"
+compatibility_date     = "2024-09-23"
+compatibility_flags    = ["nodejs_compat"]
+pages_build_output_dir = "build/client"
