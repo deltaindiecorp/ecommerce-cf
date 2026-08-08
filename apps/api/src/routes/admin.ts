@@ -5,8 +5,11 @@ import { createD1Client } from "@repo/db";
 import { orders, shipments, products } from "@repo/db/schema";
 import { eq, desc, like, and, sql, count } from "drizzle-orm";
 import { createId } from "@repo/db";
-import { paginationSchema, isFulfilledStatus } from "@repo/shared";
-import { deductOrderStock } from "../services/inventory";
+import {
+  paginationSchema, isFulfilledStatus, orderStatusUpdateSchema,
+  canTransitionOrderStatus, allowedNextStatuses,
+} from "@repo/shared";
+import { deductOrderStock, releaseOrderStock } from "../services/inventory";
 
 export const adminRouter = new Hono<{ Bindings: Env }>();
 
@@ -164,12 +167,30 @@ adminRouter.get("/orders/:id", requireAdmin, async (c) => {
 
 // ─── PATCH /api/admin/orders/:id/status ───────────────────────────────────────
 adminRouter.patch("/orders/:id/status", requireAdmin, async (c) => {
-  const { status, note } = await c.req.json<{ status: string; note?: string }>();
+  const parsed = orderStatusUpdateSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
+
+  const { status, note } = parsed.data;
   const db      = createD1Client(c.env.DB);
   const orderId = c.req.param("id");
 
+  const order = await db.query.orders.findFirst({ where: eq(orders.id, orderId) });
+  if (!order) return c.json({ success: false, error: "Pesanan tidak ditemukan" }, 404);
+
+  // Tanpa penjaga ini order bisa melompat sembarangan — termasuk mundur dari
+  // status akhir — dan tiap lompatan memicu efek samping stok.
+  if (order.status !== status && !canTransitionOrderStatus(order.status, status)) {
+    const allowed = allowedNextStatuses(order.status);
+    return c.json({
+      success: false,
+      error: allowed.length
+        ? `Status "${order.status}" hanya bisa berpindah ke: ${allowed.join(", ")}.`
+        : `Status "${order.status}" sudah final dan tidak bisa diubah lagi.`,
+    }, 409);
+  }
+
   await db.update(orders)
-    .set({ status: status as any, adminNote: note, updatedAt: new Date() })
+    .set({ status, adminNote: note ?? order.adminNote, updatedAt: new Date() })
     .where(eq(orders.id, orderId));
 
   // Barang keluar gudang begitu order masuk status terpenuhi — konversi
@@ -177,6 +198,13 @@ adminRouter.patch("/orders/:id/status", requireAdmin, async (c) => {
   // jadi aman kalau status di-set bolak-balik atau jalur lain sudah memotong.
   if (isFulfilledStatus(status)) {
     await deductOrderStock(db, orderId);
+  }
+
+  // Pembatalan lewat panel sebelumnya tidak melepas reservasi sama sekali —
+  // hanya jalur webhook pembayaran yang melakukannya — sehingga stok tetap
+  // terkunci untuk order yang jelas-jelas sudah batal.
+  if (status === "cancelled") {
+    await releaseOrderStock(db, orderId);
   }
 
   return c.json({ success: true });

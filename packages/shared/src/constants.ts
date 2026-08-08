@@ -45,6 +45,36 @@ export function isFulfilledStatus(status: string): boolean {
   return (FULFILLED_STATUSES as readonly string[]).includes(status);
 }
 
+// ─── Transisi Status Order ────────────────────────────────────────────────────
+// Transisi yang boleh dilakukan admin lewat PATCH /api/admin/orders/:id/status.
+// Sebelumnya endpoint itu menerima string apa pun tanpa cek, jadi order bisa
+// melompat dari "pending_payment" langsung ke "completed", atau order yang sudah
+// "refunded" dikembalikan ke "paid".
+//
+// "refunded" SENGAJA tidak pernah jadi tujuan di sini. Refund harus lewat
+// POST /api/payment/:orderId/refund yang benar-benar memanggil gateway —
+// menyetelnya lewat PATCH akan menandai order sebagai dikembalikan tanpa uang
+// yang benar-benar kembali ke pembeli.
+export const ORDER_STATUS_TRANSITIONS: Record<string, readonly string[]> = {
+  pending_payment: ["paid", "cancelled"],
+  paid:            ["processing", "packed", "shipped", "cancelled"],
+  processing:      ["packed", "shipped", "cancelled"],
+  packed:          ["shipped", "cancelled"],
+  shipped:         ["delivered"],
+  delivered:       ["completed"],
+  completed:       [],
+  cancelled:       [],
+  refunded:        [],
+};
+
+export function allowedNextStatuses(current: string): readonly string[] {
+  return ORDER_STATUS_TRANSITIONS[current] ?? [];
+}
+
+export function canTransitionOrderStatus(from: string, to: string): boolean {
+  return allowedNextStatuses(from).includes(to);
+}
+
 // ─── Courier List ─────────────────────────────────────────────────────────────
 export const COURIERS = [
   { code: "jne",     name: "JNE" },

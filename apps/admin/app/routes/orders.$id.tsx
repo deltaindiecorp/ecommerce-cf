@@ -2,12 +2,12 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/cloudfla
 import { json, redirect } from "@remix-run/cloudflare";
 import { useLoaderData, useActionData, Form, Link, useNavigation } from "@remix-run/react";
 
+import { allowedNextStatuses } from "@repo/shared";
+
 import { apiFetch, formatApiError } from "~/lib/api";
 
-const ORDER_STATUSES = [
-  "pending_payment", "paid", "processing", "packed",
-  "shipped", "delivered", "completed", "cancelled", "refunded",
-];
+// Daftar transisi dibaca dari @repo/shared, sumber yang sama dengan penjaga di
+// API — supaya dropdown tidak pernah menawarkan status yang pasti ditolak.
 // Sinkron dengan REFUNDABLE_STATUSES di apps/api/src/routes/payment.ts
 const REFUNDABLE_STATUSES = ["paid", "processing", "packed", "shipped", "delivered", "completed"];
 const STATUS_LABEL: Record<string, string> = {
@@ -80,6 +80,7 @@ export default function OrderDetailPage() {
   const nav        = useNavigation();
   const isSubmitting = nav.state === "submitting";
   const addr       = order.shippingAddress ?? {};
+  const nextStatuses = allowedNextStatuses(order.status);
 
   return (
     <div className="max-w-4xl">
@@ -155,15 +156,22 @@ export default function OrderDetailPage() {
             <h2 className="font-semibold text-gray-700 mb-3">Update Status</h2>
             <Form method="post" className="space-y-3">
               <input type="hidden" name="intent" value="update_status" />
-              <select
-                name="status"
-                defaultValue={order.status}
-                className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                {ORDER_STATUSES.map(s => (
-                  <option key={s} value={s}>{STATUS_LABEL[s] ?? s}</option>
-                ))}
-              </select>
+              {nextStatuses.length === 0 ? (
+                <p className="text-sm text-gray-500 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
+                  Status &ldquo;{STATUS_LABEL[order.status] ?? order.status}&rdquo; sudah final
+                  dan tidak bisa diubah lagi.
+                </p>
+              ) : (
+                <select
+                  name="status"
+                  defaultValue={nextStatuses[0]}
+                  className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {nextStatuses.map(s => (
+                    <option key={s} value={s}>{STATUS_LABEL[s] ?? s}</option>
+                  ))}
+                </select>
+              )}
               <textarea
                 name="note"
                 placeholder="Catatan admin (opsional)"
@@ -172,7 +180,7 @@ export default function OrderDetailPage() {
               />
               <button
                 type="submit"
-                disabled={isSubmitting}
+                disabled={isSubmitting || nextStatuses.length === 0}
                 className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-medium disabled:opacity-50"
               >
                 {isSubmitting ? "Menyimpan..." : "Update Status"}
