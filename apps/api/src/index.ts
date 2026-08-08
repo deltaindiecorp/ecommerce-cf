@@ -4,6 +4,7 @@ import { logger } from "hono/logger";
 import { prettyJSON } from "hono/pretty-json";
 import { secureHeaders } from "hono/secure-headers";
 import type { Env } from "./types/env";
+import { requireRuntimeConfig } from "./middleware/require-config";
 
 // Routes
 import { catalogRouter }  from "./routes/catalog";
@@ -36,7 +37,14 @@ app.use("/api/*", (c, next) =>
 );
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
+// Sengaja di atas requireRuntimeConfig supaya health check tetap menjawab dan
+// bisa dipakai memastikan Worker-nya hidup, terpisah dari status konfigurasi.
 app.get("/", (c) => c.json({ status: "ok", service: "ecommerce-api", ts: Date.now() }));
+
+// ─── Config Guard ─────────────────────────────────────────────────────────────
+// Menolak semua request /api/* kalau secret wajib belum diset, dengan pesan yang
+// menjelaskan penyebabnya — bukan DataError dari Web Crypto di tengah request.
+app.use("/api/*", requireRuntimeConfig);
 
 // ─── API Routes ───────────────────────────────────────────────────────────────
 app.route("/api/auth",      authRouter);
