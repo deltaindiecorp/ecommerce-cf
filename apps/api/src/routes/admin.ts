@@ -10,6 +10,13 @@ import { deductOrderStock } from "../services/inventory";
 
 export const adminRouter = new Hono<{ Bindings: Env }>();
 
+// Pembeli terdaftar tidak mengisi kolom guest_*, jadi tanpa relasi ini panel
+// admin selalu menampilkan "Customer"/"—" untuk mereka. Kolom disebut eksplisit:
+// `user: true` akan ikut mengirim hash password ke browser admin.
+const ORDER_USER_COLUMNS = {
+  columns: { id: true, name: true, email: true, phone: true },
+} as const;
+
 const SALES_STATUSES = ["paid", "processing", "packed", "shipped", "delivered", "completed"];
 const DAY_LABELS = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"]; // getUTCDay(): 0=Minggu
 
@@ -133,7 +140,7 @@ adminRouter.get("/orders", requireAdmin, async (c) => {
   const [rows, countRows] = await Promise.all([
     db.query.orders.findMany({
       where,
-      with:    { items: true, payments: true, shipments: true },
+      with:    { items: true, payments: true, shipments: true, user: ORDER_USER_COLUMNS },
       orderBy: [desc(orders.createdAt)],
       limit,
       offset:  (page - 1) * limit,
@@ -149,7 +156,7 @@ adminRouter.get("/orders/:id", requireAdmin, async (c) => {
   const db    = createD1Client(c.env.DB);
   const order = await db.query.orders.findFirst({
     where: eq(orders.id, c.req.param("id")),
-    with:  { items: true, payments: true, shipments: true },
+    with:  { items: true, payments: true, shipments: true, user: ORDER_USER_COLUMNS },
   });
   if (!order) return c.json({ success: false, error: "Pesanan tidak ditemukan" }, 404);
   return c.json({ success: true, data: order });
