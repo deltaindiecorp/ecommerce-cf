@@ -29,6 +29,7 @@ export const PUBLIC_PRODUCT_COLUMNS = {
   description: true, price: true, comparePrice: true,
   weight: true, width: true, height: true, length: true,
   images: true, tags: true, status: true, isFeatured: true,
+  trackInventory: true,
   metaTitle: true, metaDesc: true, createdAt: true, updatedAt: true,
 } as const;
 
@@ -55,6 +56,7 @@ export const publicProductSelect = {
   tags:         products.tags,
   status:       products.status,
   isFeatured:   products.isFeatured,
+  trackInventory: products.trackInventory,
   metaTitle:    products.metaTitle,
   metaDesc:     products.metaDesc,
   createdAt:    products.createdAt,

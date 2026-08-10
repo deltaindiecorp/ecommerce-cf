@@ -132,7 +132,8 @@ export async function action({ params, request }: ActionFunctionArgs) {
     images:       linesToArray(formData, "images"),
     tags:         csvToArray(formData, "tags"),
     status:       String(formData.get("status") ?? "draft"),
-    isFeatured:   formData.get("isFeatured") === "on",
+    isFeatured:     formData.get("isFeatured") === "on",
+    trackInventory: formData.get("trackInventory") === "on",
     metaTitle:    optText(formData, "metaTitle"),
     metaDesc:     optText(formData, "metaDesc"),
   };
@@ -341,14 +342,30 @@ export default function ProductEditPage() {
                 <option value="archived">Arsip</option>
               </select>
             </div>
-            <label className="flex items-center gap-2 text-sm text-gray-700 mt-6">
-              <input
-                type="checkbox" name="isFeatured"
-                defaultChecked={Boolean(product.isFeatured)}
-                className="rounded border-gray-300"
-              />
-              Tampilkan sebagai produk unggulan
-            </label>
+            <div className="space-y-3 mt-6">
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox" name="isFeatured"
+                  defaultChecked={Boolean(product.isFeatured)}
+                  className="rounded border-gray-300"
+                />
+                Tampilkan sebagai produk unggulan
+              </label>
+              <div>
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox" name="trackInventory"
+                    defaultChecked={product.trackInventory !== false}
+                    className="rounded border-gray-300"
+                  />
+                  Lacak stok produk ini
+                </label>
+                <p className="text-[11px] text-gray-400 mt-1 ml-6">
+                  Matikan untuk jasa, produk digital, pre-order, atau made-to-order —
+                  produk tanpa pelacakan bisa dipesan tanpa perlu punya stok di gudang.
+                </p>
+              </div>
+            </div>
           </div>
         </Section>
 

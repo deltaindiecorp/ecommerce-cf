@@ -77,6 +77,12 @@ export const products = sqliteTable("products", {
   tags:        text("tags", { mode: "json" }).$type<string[]>().default([]),
   status:      text("status", { enum: ["active", "draft", "archived"] }).notNull().default("draft"),
   isFeatured:  integer("is_featured", { mode: "boolean" }).notNull().default(false),
+  // false = produk tidak butuh stok: jasa, produk digital, pre-order, atau
+  // made-to-order. Tanpa ini setiap produk WAJIB punya baris inventory, dan
+  // checkout menolak apa pun yang tidak punya — jadi produk semacam itu tidak
+  // bisa dijual sama sekali. Default true supaya produk lama tidak berubah
+  // perilaku.
+  trackInventory: integer("track_inventory", { mode: "boolean" }).notNull().default(true),
   metaTitle:   text("meta_title"),
   metaDesc:    text("meta_desc"),
   createdAt:   integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),

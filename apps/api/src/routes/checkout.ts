@@ -47,6 +47,31 @@ checkoutRouter.post("/", optionalAuth, async (c) => {
     .where(eq(warehouses.isActive, true))
     .orderBy(warehouses.priority);
 
+  // Metadata produk diambil sekali di depan: dipakai untuk memutuskan apakah
+  // item perlu dicarikan stok, sekaligus untuk snapshot harga modal nanti.
+  const cartProductIds = [...new Set(cart.items.map(i => i.productId))];
+  const cartVariantIds = [...new Set(
+    cart.items.map(i => i.variantId).filter((v): v is string => Boolean(v))
+  )];
+
+  const [productMetaRows, costVariantRows] = await Promise.all([
+    db.select({
+      id: products.id, costPrice: products.costPrice, trackInventory: products.trackInventory,
+    }).from(products).where(inArray(products.id, cartProductIds)),
+    cartVariantIds.length
+      ? db.select({ id: productVariants.id, costPrice: productVariants.costPrice })
+          .from(productVariants).where(inArray(productVariants.id, cartVariantIds))
+      : Promise.resolve([] as Array<{ id: string; costPrice: number | null }>),
+  ]);
+
+  const productMeta = new Map(productMetaRows.map(r => [r.id, r]));
+  const variantCost = new Map(costVariantRows.map(r => [r.id, r.costPrice]));
+
+  // Produk tanpa pelacakan stok (jasa, digital, pre-order) tidak punya baris
+  // inventory sama sekali. Tanpa pengecualian ini, cek `available` selalu 0 dan
+  // checkout menolaknya — produk semacam itu tidak akan pernah bisa dijual.
+  const isTracked = (productId: string) => productMeta.get(productId)?.trackInventory !== false;
+
   const assignedItems: Array<typeof cart.items[0] & { warehouseId: string }> = [];
   // Lock yang berhasil didapat dari StockLockDurableObject — dirilis setelah
   // reservasi permanen ditulis ke D1, atau di-rollback kalau checkout gagal.
@@ -60,6 +85,18 @@ checkoutRouter.post("/", optionalAuth, async (c) => {
 
   for (const item of cart.items) {
     let assigned = false;
+
+    // Tidak butuh stok — cukup ditempelkan ke gudang aktif pertama supaya
+    // order_items tetap punya warehouseId yang sah untuk keperluan pengiriman.
+    if (!isTracked(item.productId)) {
+      const fallback = allWarehouses[0];
+      if (!fallback) {
+        await releaseAcquiredLocks();
+        return c.json({ success: false, error: "Tidak ada gudang aktif" }, 400);
+      }
+      assignedItems.push({ ...item, warehouseId: fallback.id });
+      continue;
+    }
 
     for (const wh of allWarehouses) {
       const inv = await db.select().from(inventory).where(
@@ -129,32 +166,15 @@ checkoutRouter.post("/", optionalAuth, async (c) => {
   });
 
   // ─── Snapshot Harga Modal ──────────────────────────────────────────────────
-  // Diambil dari DB saat checkout, bukan dibawa lewat cart: cart tersimpan di KV
-  // dan ikut dikirim ke browser pembeli, jadi harga modal tidak boleh lewat
-  // sana. Nilai yang benar juga nilai saat order dibuat — modal berubah tiap
-  // restock, dan tanpa snapshot ini margin historis tidak bisa dihitung ulang.
-  const cartProductIds = [...new Set(assignedItems.map(i => i.productId))];
-  const cartVariantIds = [...new Set(
-    assignedItems.map(i => i.variantId).filter((v): v is string => Boolean(v))
-  )];
-
-  const [costProductRows, costVariantRows] = await Promise.all([
-    db.select({ id: products.id, costPrice: products.costPrice })
-      .from(products).where(inArray(products.id, cartProductIds)),
-    cartVariantIds.length
-      ? db.select({ id: productVariants.id, costPrice: productVariants.costPrice })
-          .from(productVariants).where(inArray(productVariants.id, cartVariantIds))
-      : Promise.resolve([] as Array<{ id: string; costPrice: number | null }>),
-  ]);
-
-  const productCost = new Map(costProductRows.map(r => [r.id, r.costPrice]));
-  const variantCost = new Map(costVariantRows.map(r => [r.id, r.costPrice]));
-
+  // Diambil dari DB saat checkout (lihat productMeta di atas), bukan dibawa
+  // lewat cart: cart tersimpan di KV dan ikut dikirim ke browser pembeli. Nilai
+  // yang benar juga nilai saat order dibuat — modal berubah tiap restock.
+  //
   // Varian boleh override modal produk. Pakai ?? (bukan ||) supaya modal 0 yang
   // memang disetel tidak jatuh ke fallback. NULL = produk belum diisi modalnya.
   function costSnapshotFor(productId: string, variantId?: string): number | null {
     const fromVariant = variantId ? variantCost.get(variantId) : null;
-    return fromVariant ?? productCost.get(productId) ?? null;
+    return fromVariant ?? productMeta.get(productId)?.costPrice ?? null;
   }
 
   // ─── Insert Order Items + Reserve Stock ────────────────────────────────────
@@ -175,6 +195,10 @@ checkoutRouter.post("/", optionalAuth, async (c) => {
       qty:            item.qty,
       subtotal:       item.subtotal,
     });
+
+    // Produk tak terlacak tidak punya baris inventory — tidak ada yang perlu
+    // direservasi, dan mencatat pergerakan hanya akan mengotori kartu stok.
+    if (!isTracked(item.productId)) continue;
 
     // Reserve stok — filter baris pakai helper yang sama dengan release/deduct
     await db.update(inventory)

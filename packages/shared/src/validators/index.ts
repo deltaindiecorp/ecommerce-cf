@@ -65,6 +65,7 @@ export const productInputSchema = z.object({
   tags:         z.array(z.string()).default([]),
   status:       z.enum(["active", "draft", "archived"]).default("draft"),
   isFeatured:   z.boolean().default(false),
+  trackInventory: z.boolean().default(true),
   metaTitle:    z.string().nullable().optional(),
   metaDesc:     z.string().nullable().optional(),
 });
