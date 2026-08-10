@@ -80,13 +80,12 @@ describe("deductOrderStock", () => {
     expect(inventoryUpdates()[0].sql.toLowerCase()).toContain("variant_id\" is null");
   });
 
-  it("memotong qty_on_hand, qty_available, dan qty_reserved sekaligus", async () => {
+  it("memotong qty_on_hand dan qty_reserved sekaligus", async () => {
     const { db, inventoryUpdates } = makeDb({ items: [ITEM_A] });
     await deductOrderStock(db, "order-1");
 
     const sql = inventoryUpdates()[0].sql;
     expect(sql).toContain("qty_on_hand");
-    expect(sql).toContain("qty_available");
     expect(sql).toContain("qty_reserved");
   });
 
@@ -124,6 +123,14 @@ describe("deductOrderStock", () => {
     expect(updates).toHaveLength(1);
     expect(updates[0].params).toContain("var-biru");
   });
+
+  it("mencatat aktor pada ledger saat diberikan", async () => {
+    const { db, calls } = makeDb({ items: [ITEM_A] });
+    await deductOrderStock(db, "order-1", "admin-42");
+
+    const insert = calls.find(c => c.sql.includes("inventory_movements") && c.method === "run");
+    expect(insert?.params).toContain("admin-42");
+  });
 });
 
 // ─── releaseOrderStock ────────────────────────────────────────────────────────
@@ -145,7 +152,6 @@ describe("releaseOrderStock", () => {
     const sql = inventoryUpdates()[0].sql;
     expect(sql).toContain("qty_reserved");
     expect(sql).not.toContain("qty_on_hand");
-    expect(sql).not.toContain("qty_available");
   });
 
   it("melewati item yang reservasinya sudah pernah dilepas (idempoten)", async () => {

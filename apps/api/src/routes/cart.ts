@@ -56,7 +56,7 @@ cartRouter.post("/add", optionalAuth, async (c) => {
       : eq(inventory.productId, productId)
     );
 
-  const totalStock = stockRows.reduce((s, r) => s + r.qtyAvailable - r.qtyReserved, 0);
+  const totalStock = stockRows.reduce((s, r) => s + r.qtyOnHand - r.qtyReserved, 0);
   if (totalStock < qty) {
     return c.json({ success: false, error: `Stok tidak cukup. Tersisa: ${totalStock}` }, 400);
   }

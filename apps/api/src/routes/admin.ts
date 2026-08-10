@@ -197,14 +197,14 @@ adminRouter.patch("/orders/:id/status", requireAdmin, async (c) => {
   // reservasi jadi pengurangan stok riil. deductOrderStock idempoten per item,
   // jadi aman kalau status di-set bolak-balik atau jalur lain sudah memotong.
   if (isFulfilledStatus(status)) {
-    await deductOrderStock(db, orderId);
+    await deductOrderStock(db, orderId, c.get("userId" as any));
   }
 
   // Pembatalan lewat panel sebelumnya tidak melepas reservasi sama sekali —
   // hanya jalur webhook pembayaran yang melakukannya — sehingga stok tetap
   // terkunci untuk order yang jelas-jelas sudah batal.
   if (status === "cancelled") {
-    await releaseOrderStock(db, orderId);
+    await releaseOrderStock(db, orderId, c.get("userId" as any));
   }
 
   return c.json({ success: true });
@@ -235,7 +235,7 @@ adminRouter.post("/orders/:id/shipment", requireAdmin, async (c) => {
       .where(eq(orders.id, c.req.param("id")));
 
     // Resi terisi = barang diserahkan ke kurir, stok fisik keluar gudang
-    await deductOrderStock(db, c.req.param("id"));
+    await deductOrderStock(db, c.req.param("id"), c.get("userId" as any));
 
     // Enqueue resi polling
     await c.env.RESI_POLL_QUEUE.send({ type: "shipment_created", shipmentId, trackingNo, courier });

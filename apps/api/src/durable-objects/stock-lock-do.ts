@@ -13,7 +13,7 @@ export class StockLockDurableObject extends DurableObject<Env> {
     const body = await request.json() as {
       key: string;  // `${productId}:${variantId ?? "__base__"}:${warehouseId}`
       qty: number;
-      maxQty?: number; // stok tersedia riil dari D1 (qtyAvailable - qtyReserved) saat request masuk
+      maxQty?: number; // stok tersedia riil dari D1 (qtyOnHand - qtyReserved) saat request masuk
       ttlMs?: number;
     };
 

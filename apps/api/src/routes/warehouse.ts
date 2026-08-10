@@ -2,10 +2,13 @@ import { Hono } from "hono";
 import type { Env } from "../types/env";
 import { requireAdmin } from "../middleware/auth";
 import { createD1Client } from "@repo/db";
-import { warehouses, inventory, warehouseTransfers, inventoryMovements } from "@repo/db/schema";
-import { eq, and, sql } from "drizzle-orm";
+import { warehouses, inventory, warehouseTransfers, inventoryMovements, products, productVariants, users } from "@repo/db/schema";
+import { eq, and, sql, desc, count } from "drizzle-orm";
 import { createId } from "@repo/db";
-import { inventoryAdjustSchema, warehouseInputSchema, warehouseUpdateSchema, warehouseTransferSchema } from "@repo/shared";
+import {
+  inventoryAdjustSchema, warehouseInputSchema, warehouseUpdateSchema,
+  warehouseTransferSchema, paginationSchema,
+} from "@repo/shared";
 import { inventoryRowFilter } from "../services/inventory";
 
 export const warehouseRouter = new Hono<{ Bindings: Env }>();
@@ -100,6 +103,57 @@ warehouseRouter.get("/:id/inventory", requireAdmin, async (c) => {
   return c.json({ success: true, data: rows });
 });
 
+// ─── GET /api/warehouse/:id/movements ────────────────────────────────────────
+// Kartu stok. Tabel inventory_movements sudah ditulis rajin sejak awal tapi
+// tidak pernah dibaca satu endpoint pun — ledger yang tidak bisa dilihat sama
+// saja tidak ada. Ini yang menjawab "kenapa stoknya berubah, kapan, oleh siapa".
+warehouseRouter.get("/:id/movements", requireAdmin, async (c) => {
+  const { page, limit } = paginationSchema.parse(c.req.query());
+  const { productId, type } = c.req.query();
+
+  const db          = createD1Client(c.env.DB);
+  const warehouseId = c.req.param("id");
+
+  const conds = [eq(inventoryMovements.warehouseId, warehouseId)];
+  if (productId) conds.push(eq(inventoryMovements.productId, productId));
+  if (type)      conds.push(eq(inventoryMovements.type, type as any));
+  const where = and(...conds);
+
+  const [rows, countRows] = await Promise.all([
+    db.select({
+      id:        inventoryMovements.id,
+      type:      inventoryMovements.type,
+      qty:       inventoryMovements.qty,
+      refType:   inventoryMovements.refType,
+      refId:     inventoryMovements.refId,
+      note:      inventoryMovements.note,
+      createdAt: inventoryMovements.createdAt,
+      productId: inventoryMovements.productId,
+      variantId: inventoryMovements.variantId,
+      productName: products.name,
+      variantName: productVariants.name,
+      // Nama aktor, bukan sekadar id — kolom ini gunanya justru untuk dibaca
+      // manusia saat menelusuri selisih opname.
+      actorName:   users.name,
+    })
+      .from(inventoryMovements)
+      .leftJoin(products, eq(products.id, inventoryMovements.productId))
+      .leftJoin(productVariants, eq(productVariants.id, inventoryMovements.variantId))
+      .leftJoin(users, eq(users.id, inventoryMovements.createdBy))
+      .where(where)
+      .orderBy(desc(inventoryMovements.createdAt))
+      .limit(limit)
+      .offset((page - 1) * limit),
+    db.select({ total: count() }).from(inventoryMovements).where(where),
+  ]);
+
+  return c.json({
+    success: true,
+    data:    rows,
+    meta:    { page, limit, total: countRows[0]?.total ?? 0 },
+  });
+});
+
 // ─── POST /api/warehouse/:id/inventory/adjust ─────────────────────────────────
 // Stok masuk / koreksi manual (mis. barang baru datang, opname). qty positif =
 // tambah, negatif = kurangi. Berbeda dari /transfer yang memindah stok ANTAR gudang.
@@ -107,7 +161,7 @@ warehouseRouter.post("/:id/inventory/adjust", requireAdmin, async (c) => {
   const parsed = inventoryAdjustSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 
-  const { productId, variantId, qty, note } = parsed.data;
+  const { productId, variantId, qty, movementType, note } = parsed.data;
   const warehouseId = c.req.param("id");
   const db = createD1Client(c.env.DB);
 
@@ -124,25 +178,28 @@ warehouseRouter.post("/:id/inventory/adjust", requireAdmin, async (c) => {
   if (existing) {
     await db.update(inventory)
       .set({
-        qtyAvailable: sql`MAX(0, qty_available + ${qty})`,
-        qtyOnHand:    sql`MAX(0, qty_on_hand + ${qty})`,
-        updatedAt:    new Date(),
+        qtyOnHand: sql`MAX(0, qty_on_hand + ${qty})`,
+        updatedAt: new Date(),
       })
       .where(eq(inventory.id, existing.id));
   } else {
     if (qty < 0) return c.json({ success: false, error: "Stok belum ada, tidak bisa dikurangi" }, 400);
     await db.insert(inventory).values({
       id: createId(), warehouseId, productId, variantId: variantId ?? null,
-      qtyAvailable: qty, qtyOnHand: qty, qtyReserved: 0,
+      qtyOnHand: qty, qtyReserved: 0,
     });
   }
 
+  // Tipe diambil dari maksud yang dinyatakan admin, bukan disimpulkan dari tanda
+  // qty. Barang datang dari supplier dan koreksi opname yang naik dua-duanya
+  // positif, tapi artinya berbeda dan laporan stok harus bisa memisahkannya.
   await db.insert(inventoryMovements).values({
     id: createId(), warehouseId, productId, variantId: variantId ?? null,
-    type:    qty > 0 ? "in" : "adjustment",
-    qty:     Math.abs(qty),
-    refType: "adjustment",
-    note:    note ?? (qty > 0 ? "Stok masuk (admin)" : "Koreksi stok (admin)"),
+    type:      movementType,
+    qty:       Math.abs(qty),
+    refType:   "adjustment",
+    createdBy: c.get("userId" as any) ?? null,
+    note:      note ?? (movementType === "in" ? "Stok masuk" : "Koreksi opname"),
   });
 
   return c.json({ success: true });
@@ -153,10 +210,9 @@ warehouseRouter.post("/:id/inventory/adjust", requireAdmin, async (c) => {
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // Invarian kolom qty yang dipegang seluruh kode ini:
-//   qtyOnHand    = barang fisik di rak
-//   qtyAvailable = bergerak seiring qtyOnHand (dua kolom ini selalu sejalan)
-//   qtyReserved  = sudah dijanjikan tapi belum keluar rak (order + transfer pending)
-//   stok bisa dijual = qtyAvailable - qtyReserved
+//   qtyOnHand   = barang fisik di rak
+//   qtyReserved = sudah dijanjikan tapi belum keluar rak (order + transfer pending)
+//   bisa dijual = qtyOnHand - qtyReserved
 //
 // Transfer memakai reservasi dua tahap, sama seperti checkout: saat dibuat, stok
 // di gudang asal DIRESERVASI supaya tidak ikut terjual selagi barang menunggu
@@ -183,7 +239,7 @@ warehouseRouter.post("/transfer", requireAdmin, async (c) => {
     where: inventoryRowFilter(fromWarehouse, productId, variantId),
   });
 
-  const available = (srcInv?.qtyAvailable ?? 0) - (srcInv?.qtyReserved ?? 0);
+  const available = (srcInv?.qtyOnHand ?? 0) - (srcInv?.qtyReserved ?? 0);
   if (available < qty) {
     return c.json({ success: false, error: `Stok tidak cukup. Tersedia: ${available}` }, 400);
   }
@@ -206,6 +262,7 @@ warehouseRouter.post("/transfer", requireAdmin, async (c) => {
     id: createId(), warehouseId: fromWarehouse, productId,
     variantId: variantId ?? null, type: "reserve",
     qty, refType: "transfer", refId: transferId,
+    createdBy: c.get("userId" as any) ?? null,
     note: "Reservasi untuk transfer antar gudang",
   });
 
@@ -229,10 +286,9 @@ warehouseRouter.patch("/transfer/:id/complete", requireAdmin, async (c) => {
   // nilai negatif kalau ada koreksi manual di tengah jalan.
   await db.update(inventory)
     .set({
-      qtyReserved:  sql`MAX(0, qty_reserved - ${qty})`,
-      qtyAvailable: sql`MAX(0, qty_available - ${qty})`,
-      qtyOnHand:    sql`MAX(0, qty_on_hand - ${qty})`,
-      updatedAt:    new Date(),
+      qtyReserved: sql`MAX(0, qty_reserved - ${qty})`,
+      qtyOnHand:   sql`MAX(0, qty_on_hand - ${qty})`,
+      updatedAt:   new Date(),
     })
     .where(inventoryRowFilter(fromWarehouse, productId, variantId));
 
@@ -244,16 +300,15 @@ warehouseRouter.patch("/transfer/:id/complete", requireAdmin, async (c) => {
   if (destInv) {
     await db.update(inventory)
       .set({
-        qtyAvailable: sql`qty_available + ${qty}`,
-        qtyOnHand:    sql`qty_on_hand + ${qty}`,
-        updatedAt:    new Date(),
+        qtyOnHand: sql`qty_on_hand + ${qty}`,
+        updatedAt: new Date(),
       })
       .where(eq(inventory.id, destInv.id));
   } else {
     await db.insert(inventory).values({
       id: createId(), warehouseId: toWarehouse,
       productId, variantId: variantId ?? null,
-      qtyAvailable: qty, qtyReserved: 0, qtyOnHand: qty,
+      qtyOnHand: qty, qtyReserved: 0,
     });
   }
 
@@ -265,6 +320,7 @@ warehouseRouter.patch("/transfer/:id/complete", requireAdmin, async (c) => {
       id: createId(), warehouseId, productId,
       variantId: variantId ?? null, type,
       qty, refType: "transfer", refId: transfer.id,
+      createdBy: c.get("userId" as any) ?? null,
     });
   }
 
@@ -298,6 +354,7 @@ warehouseRouter.patch("/transfer/:id/cancel", requireAdmin, async (c) => {
     id: createId(), warehouseId: fromWarehouse, productId,
     variantId: variantId ?? null, type: "release",
     qty, refType: "transfer", refId: transfer.id,
+    createdBy: c.get("userId" as any) ?? null,
     note: "Transfer dibatalkan",
   });
 

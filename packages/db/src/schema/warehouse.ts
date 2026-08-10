@@ -1,7 +1,7 @@
 import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
 import { relations } from "drizzle-orm";
 import { createId } from "../utils";
-import { products, productVariants } from "./catalog";
+import { products, productVariants, users } from "./catalog";
 
 // ─── Warehouses ───────────────────────────────────────────────────────────────
 export const warehouses = sqliteTable("warehouses", {
@@ -30,9 +30,15 @@ export const inventory = sqliteTable("inventory", {
   warehouseId: text("warehouse_id").notNull().references(() => warehouses.id),
   productId:   text("product_id").notNull().references(() => products.id),
   variantId:   text("variant_id").references(() => productVariants.id), // null = no variant
-  qtyAvailable:integer("qty_available").notNull().default(0),
-  qtyReserved: integer("qty_reserved").notNull().default(0),   // locked by pending orders
-  qtyOnHand:   integer("qty_on_hand").notNull().default(0),    // physical stock
+  // Dua kolom, bukan tiga. Sebelumnya ada qty_available yang selalu bergerak
+  // seiring qty_on_hand — dua kolom melacak hal yang sama lalu melenceng karena
+  // di-update di tempat berbeda. Invarian sekarang tunggal dan tertulis:
+  //
+  //   qtyOnHand   = barang fisik di rak
+  //   qtyReserved = sudah dijanjikan tapi belum keluar rak (order + transfer pending)
+  //   bisa dijual = qtyOnHand - qtyReserved
+  qtyReserved: integer("qty_reserved").notNull().default(0),
+  qtyOnHand:   integer("qty_on_hand").notNull().default(0),
   lowStockAlert:integer("low_stock_alert").notNull().default(5),
   updatedAt:   integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
 }, (t) => ({
@@ -60,6 +66,12 @@ export const inventoryMovements = sqliteTable("inventory_movements", {
   qty:         integer("qty").notNull(),
   refType:     text("ref_type"), // order, transfer, adjustment
   refId:       text("ref_id"),   // order_id, transfer_id
+  // Siapa yang memicu pergerakan ini. NULL untuk yang dipicu sistem (cron
+  // expire, webhook pembayaran) dan untuk baris lama sebelum kolom ini ada.
+  // Tanpa ini ledger mencatat APA yang terjadi tapi tidak pernah SIAPA —
+  // justru yang paling dibutuhkan untuk type "adjustment", satu-satunya
+  // pergerakan yang murni keputusan manusia.
+  createdBy:   text("created_by").references(() => users.id),
   note:        text("note"),
   createdAt:   integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
 }, (t) => ({

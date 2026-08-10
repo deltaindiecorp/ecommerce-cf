@@ -70,7 +70,7 @@ checkoutRouter.post("/", optionalAuth, async (c) => {
         )
       ).get();
 
-      const available = (inv?.qtyAvailable ?? 0) - (inv?.qtyReserved ?? 0);
+      const available = (inv?.qtyOnHand ?? 0) - (inv?.qtyReserved ?? 0);
       if (available < item.qty) continue;
 
       // Reservasi atomik lewat Durable Object — mencegah dua checkout concurrent
@@ -191,6 +191,7 @@ checkoutRouter.post("/", optionalAuth, async (c) => {
       qty:         item.qty,
       refType:     "order",
       refId:       orderId,
+      createdBy:   userId ?? null,
       note:        `Reserve untuk order ${orderNo}`,
     });
   }

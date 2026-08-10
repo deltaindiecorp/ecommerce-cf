@@ -102,7 +102,7 @@ export async function releaseStockLock(
 // Melepas reservasi (qty_reserved) — kebalikan dari reserve saat checkout.
 // Dipanggil saat order batal / refund sebelum dikirim / pembayaran kedaluwarsa.
 // Tidak menyentuh qty_on_hand karena barangnya memang belum pernah keluar rak.
-export async function releaseOrderStock(db: DbClient, orderId: string) {
+export async function releaseOrderStock(db: DbClient, orderId: string, actorId?: string | null) {
   const items   = await db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
   const applied = await appliedItemKeys(db, orderId, "release");
 
@@ -125,6 +125,7 @@ export async function releaseOrderStock(db: DbClient, orderId: string) {
       qty:         item.qty,
       refType:     "order",
       refId:       orderId,
+      createdBy:   actorId ?? null,
       note:        "Release stok - order dibatalkan",
     });
   }
@@ -138,20 +139,19 @@ export async function releaseOrderStock(db: DbClient, orderId: string) {
 // Idempoten per item, jadi aman kalau admin bolak-balik mengubah status atau
 // dua jalur menyetel status terpenuhi hampir bersamaan. Ini penting karena
 // belum ada state machine yang menjaga urutan transisi order.
-export async function deductOrderStock(db: DbClient, orderId: string) {
+export async function deductOrderStock(db: DbClient, orderId: string, actorId?: string | null) {
   const items   = await db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
   const applied = await appliedItemKeys(db, orderId, "out");
 
   for (const item of items) {
     if (applied.has(itemKey(item.productId, item.variantId))) continue;
 
-    // Kurangi available + reserved sekaligus (sudah dipenuhi)
+    // Reservasi dilepas sekaligus stok fisik dipotong — barangnya keluar rak
     await db.update(inventory)
       .set({
-        qtyAvailable: sql`MAX(0, qty_available - ${item.qty})`,
-        qtyReserved:  sql`MAX(0, qty_reserved - ${item.qty})`,
-        qtyOnHand:    sql`MAX(0, qty_on_hand - ${item.qty})`,
-        updatedAt:    new Date(),
+        qtyReserved: sql`MAX(0, qty_reserved - ${item.qty})`,
+        qtyOnHand:   sql`MAX(0, qty_on_hand - ${item.qty})`,
+        updatedAt:   new Date(),
       })
       .where(inventoryRowFilter(item.warehouseId, item.productId, item.variantId));
 
@@ -164,6 +164,7 @@ export async function deductOrderStock(db: DbClient, orderId: string) {
       qty:         item.qty,
       refType:     "order",
       refId:       orderId,
+      createdBy:   actorId ?? null,
       note:        "Stok keluar - order dikirim",
     });
   }

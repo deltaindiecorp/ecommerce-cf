@@ -111,7 +111,7 @@ catalogRouter.get("/products/:slug", async (c) => {
   // Ambil stok total dari semua gudang
   const stockRows = await db.select({
     variantId:    inventory.variantId,
-    totalAvail:   sql<number>`sum(qty_available - qty_reserved)`,
+    totalAvail:   sql<number>`sum(qty_on_hand - qty_reserved)`,
   })
   .from(inventory)
   .where(eq(inventory.productId, product.id))

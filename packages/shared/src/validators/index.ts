@@ -129,11 +129,19 @@ export const warehouseTransferSchema = z.object({
 });
 
 // ─── Admin: Inventory Adjustment ───────────────────────────────────────────────
+// `movementType` dipisah dari tanda qty. Versi lama menyimpulkannya dari
+// positif/negatif — qty > 0 selalu dicatat "in" — sehingga barang datang dari
+// supplier dan koreksi opname yang naik tercampur jadi satu di ledger, dan
+// laporan stok tidak akan pernah bisa memisahkan pembelian dari koreksi.
 export const inventoryAdjustSchema = z.object({
-  productId: z.string().uuid(),
-  variantId: z.string().uuid().optional(),
-  qty:       z.number().int().refine(v => v !== 0, "qty tidak boleh 0"), // + stok masuk, - koreksi turun
-  note:      z.string().max(200).optional(),
+  productId:    z.string().uuid(),
+  variantId:    z.string().uuid().nullable().optional(),
+  qty:          z.number().int().refine(v => v !== 0, "qty tidak boleh 0"), // + naik, - turun
+  movementType: z.enum(["in", "adjustment"]).default("adjustment"),
+  note:         z.string().max(200).nullable().optional(),
+}).refine(d => !(d.movementType === "in" && d.qty < 0), {
+  message: "Barang masuk tidak bisa berjumlah negatif — pakai koreksi opname",
+  path:    ["qty"],
 });
 
 // ─── Admin: Status Order ──────────────────────────────────────────────────────

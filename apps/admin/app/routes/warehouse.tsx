@@ -9,6 +9,34 @@ function optText(fd: FormData, key: string): string | null {
   return v === "" ? null : v;
 }
 
+// Arah dampak tiap jenis pergerakan terhadap stok fisik: +1 masuk, -1 keluar,
+// 0 tidak mengubah stok fisik (hanya memindahkan antara tersedia dan direservasi).
+const MOVEMENT_DIRECTION: Record<string, number> = {
+  in: 1, transfer_in: 1,
+  out: -1, transfer_out: -1,
+  adjustment: 0, reserve: 0, release: 0,
+};
+
+const MOVEMENT_LABEL: Record<string, string> = {
+  in:           "Barang masuk",
+  out:          "Keluar (order)",
+  reserve:      "Direservasi",
+  release:      "Reservasi dilepas",
+  transfer_in:  "Transfer masuk",
+  transfer_out: "Transfer keluar",
+  adjustment:   "Koreksi opname",
+};
+
+const MOVEMENT_COLOR: Record<string, string> = {
+  in:           "bg-green-100 text-green-700",
+  out:          "bg-red-100 text-red-700",
+  reserve:      "bg-yellow-100 text-yellow-700",
+  release:      "bg-gray-100 text-gray-600",
+  transfer_in:  "bg-blue-100 text-blue-700",
+  transfer_out: "bg-indigo-100 text-indigo-700",
+  adjustment:   "bg-orange-100 text-orange-700",
+};
+
 const FIELD = "w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500";
 const LABEL = "block text-xs font-medium text-gray-500 mb-1";
 
@@ -41,15 +69,18 @@ export async function loader({ request }: LoaderFunctionArgs) {
   // dan tabelnya selalu tampil kosong seolah gudangnya memang tidak berisi.
   let inventory: any[] = [];
   let products:  any[] = [];
+  let movements: any[] = [];
   if (selectedId) {
     // Produk ikut dimuat supaya penambahan stok untuk produk yang BELUM ada di
     // gudang ini bisa memakai dropdown, bukan menyuruh admin mengetik UUID.
-    const [invBody, prodBody] = await Promise.all([
+    const [invBody, prodBody, movBody] = await Promise.all([
       apiFetch<any[]>(request, `/api/warehouse/${selectedId}/inventory`),
       apiFetch<any[]>(request, "/api/admin/products?limit=100"),
+      apiFetch<any[]>(request, `/api/warehouse/${selectedId}/movements?limit=25`),
     ]);
     inventory = invBody.success  ? invBody.data ?? []  : [];
     products  = prodBody.success ? prodBody.data ?? [] : [];
+    movements = movBody.success  ? movBody.data ?? []  : [];
   }
 
   // Pencarian kota RajaOngkir untuk mengisi rajaongkirCityId tanpa hafalan.
@@ -68,6 +99,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     warehouses: warehousesBody.data ?? [],
     inventory,
     products,
+    movements,
     selectedId,
     cityQuery,
     cities,
@@ -106,10 +138,13 @@ export async function action({ request }: ActionFunctionArgs) {
   if (intent === "adjust_stock") {
     const warehouseId = String(formData.get("warehouseId") ?? "");
     const payload = {
-      productId: String(formData.get("productId") ?? ""),
-      variantId: optText(formData, "variantId") ?? undefined,
-      qty:       Number(formData.get("qty")),
-      note:      optText(formData, "note") ?? undefined,
+      productId:    String(formData.get("productId") ?? ""),
+      variantId:    optText(formData, "variantId"),
+      qty:          Number(formData.get("qty")),
+      // Maksudnya dinyatakan, bukan disimpulkan dari tanda qty — barang datang
+      // dan koreksi opname yang naik sama-sama positif tapi beda artinya.
+      movementType: String(formData.get("movementType") ?? "adjustment"),
+      note:         optText(formData, "note"),
     };
     const result = await apiFetch(request, `/api/warehouse/${warehouseId}/inventory/adjust`, {
       method: "POST", body: JSON.stringify(payload),
@@ -222,7 +257,7 @@ function WarehouseFields({ wh }: { wh?: any }) {
 }
 
 export default function WarehousePage() {
-  const { warehouses, inventory, products, selectedId, cityQuery, cities } = useLoaderData<typeof loader>();
+  const { warehouses, inventory, products, movements, selectedId, cityQuery, cities } = useLoaderData<typeof loader>();
   const actionData     = useActionData<typeof action>();
   const [searchParams] = useSearchParams();
   const nav            = useNavigation();
@@ -324,7 +359,7 @@ export default function WarehousePage() {
                 <tr><td colSpan={5} className="text-center py-8 text-gray-400">Belum ada stok di gudang ini</td></tr>
               ) : (
                 inventory.map((inv: any) => {
-                  const sellable = inv.qtyAvailable - inv.qtyReserved;
+                  const sellable = inv.qtyOnHand - inv.qtyReserved;
                   const low      = sellable <= (inv.lowStockAlert ?? 5);
                   return (
                     <tr key={inv.id} className="hover:bg-gray-50">
@@ -343,6 +378,7 @@ export default function WarehousePage() {
                       <td className="px-4 py-3">
                         <Form method="post" className="flex items-center justify-end gap-1.5">
                           <input type="hidden" name="intent" value="adjust_stock" />
+                          <input type="hidden" name="movementType" value="adjustment" />
                           <input type="hidden" name="warehouseId" value={selectedId} />
                           <input type="hidden" name="productId" value={inv.productId} />
                           {inv.variantId && <input type="hidden" name="variantId" value={inv.variantId} />}
@@ -379,7 +415,7 @@ export default function WarehousePage() {
             <Form method="post" className="grid grid-cols-12 gap-3 items-end">
               <input type="hidden" name="intent" value="adjust_stock" />
               <input type="hidden" name="warehouseId" value={selectedId} />
-              <div className="col-span-5">
+              <div className="col-span-4">
                 <label className={LABEL}>Produk</label>
                 <select name="productId" required className={FIELD}>
                   <option value="">Pilih produk</option>
@@ -388,13 +424,20 @@ export default function WarehousePage() {
                   ))}
                 </select>
               </div>
-              <div className="col-span-2">
-                <label className={LABEL}>Jumlah</label>
-                <input name="qty" type="number" required placeholder="cth. 50" className={FIELD} />
-              </div>
               <div className="col-span-3">
+                <label className={LABEL}>Jenis</label>
+                <select name="movementType" defaultValue="in" className={FIELD}>
+                  <option value="in">Barang masuk (pembelian/retur)</option>
+                  <option value="adjustment">Koreksi opname</option>
+                </select>
+              </div>
+              <div className="col-span-1">
+                <label className={LABEL}>Jumlah</label>
+                <input name="qty" type="number" required placeholder="50" className={FIELD} />
+              </div>
+              <div className="col-span-2">
                 <label className={LABEL}>Catatan</label>
-                <input name="note" placeholder="PO-1234 / opname Agustus" className={FIELD} />
+                <input name="note" placeholder="PO-1234" className={FIELD} />
               </div>
               <div className="col-span-2">
                 <button
@@ -409,6 +452,62 @@ export default function WarehousePage() {
               Untuk produk bervarian, gunakan kolom &ldquo;Sesuaikan&rdquo; pada baris varian di tabel di atas.
             </p>
           </div>
+        </div>
+      )}
+
+      {/* Kartu stok */}
+      {selected && (
+        <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-6">
+          <div className="px-5 py-4 border-b border-gray-100">
+            <h2 className="font-semibold text-gray-700">Kartu Stok · {selected.name}</h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              25 pergerakan terakhir. Menjawab kenapa stok berubah, kapan, dan oleh siapa.
+            </p>
+          </div>
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="text-left px-4 py-3 text-gray-600 font-semibold">Waktu</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-semibold">Produk</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-semibold">Jenis</th>
+                <th className="text-right px-4 py-3 text-gray-600 font-semibold">Jumlah</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-semibold">Oleh</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-semibold">Keterangan</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {movements.length === 0 ? (
+                <tr><td colSpan={6} className="text-center py-8 text-gray-400">Belum ada pergerakan stok</td></tr>
+              ) : (
+                movements.map((m: any) => {
+                  const dir = MOVEMENT_DIRECTION[m.type] ?? 0;
+                  return (
+                    <tr key={m.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-2.5 text-xs text-gray-500">
+                        {m.createdAt ? new Date(m.createdAt).toLocaleString("id-ID") : "—"}
+                      </td>
+                      <td className="px-4 py-2.5 text-gray-800">
+                        {m.productName ?? m.productId}
+                        {m.variantName && <span className="text-xs text-gray-400"> · {m.variantName}</span>}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${MOVEMENT_COLOR[m.type] ?? "bg-gray-100 text-gray-600"}`}>
+                          {MOVEMENT_LABEL[m.type] ?? m.type}
+                        </span>
+                      </td>
+                      <td className={`px-4 py-2.5 text-right font-medium ${dir > 0 ? "text-green-600" : dir < 0 ? "text-red-500" : "text-gray-500"}`}>
+                        {dir > 0 ? "+" : dir < 0 ? "−" : ""}{m.qty}
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-gray-600">
+                        {m.actorName ?? <span className="text-gray-300">sistem</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-gray-500">{m.note ?? "—"}</td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
         </div>
       )}
 
