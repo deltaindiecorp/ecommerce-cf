@@ -105,7 +105,7 @@ export default function DashboardPage() {
       </header>
 
       {/* Stat Cards */}
-      <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
           <div className="flex justify-between items-start mb-3">
             <div className="w-10 h-10 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-lg">💰</div>
@@ -131,6 +131,23 @@ export default function DashboardPage() {
           </div>
           <p className="text-sm text-gray-400 mb-1">Pelanggan Baru (Hari Ini)</p>
           <p className="text-2xl font-bold text-gray-800">{stats?.newCustomersToday ?? 0}</p>
+        </div>
+
+        {/* Laba kotor — dihitung dari costSnapshot per item order, jadi memakai
+            harga modal SAAT transaksi, bukan modal hari ini. Tidak termasuk ongkir. */}
+        <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
+          <div className="flex justify-between items-start mb-3">
+            <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-lg">📈</div>
+            {stats && <TrendBadge pct={stats.grossProfitTrendPct} />}
+          </div>
+          <p className="text-sm text-gray-400 mb-1">Laba Kotor (Hari Ini)</p>
+          <p className="text-2xl font-bold text-gray-800">Rp {(stats?.grossProfitToday ?? 0).toLocaleString("id-ID")}</p>
+          {stats && stats.profitCoveragePct < 100 && (
+            <p className="text-[11px] text-orange-600 mt-1.5">
+              Baru {stats.profitCoveragePct}% unit terjual yang harga modalnya terisi —
+              laba sebenarnya lebih rendah dari angka ini.
+            </p>
+          )}
         </div>
       </section>
 

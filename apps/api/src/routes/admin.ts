@@ -59,8 +59,31 @@ adminRouter.get("/stats/overview", requireAdmin, async (c) => {
     GROUP BY day
   `).bind(boundaryEpoch).all<{ day: string; count: number }>();
 
+  // Laba kotor dihitung di level item, bukan dari orders.total — total order
+  // termasuk ongkir, yang uang titipan kurir dan bukan pendapatan toko.
+  //
+  // Item yang cost_snapshot-nya NULL (produk belum diisi harga modal saat order
+  // dibuat) SENGAJA tidak dianggap bermodal nol; itu akan menampilkan margin
+  // 100% palsu. Item semacam itu dikeluarkan dari perhitungan laba dan dihitung
+  // terpisah sebagai cakupan, supaya angkanya jujur soal seberapa lengkap.
+  const profitResult = await c.env.DB.prepare(`
+    SELECT
+      date(o.created_at, 'unixepoch', '+7 hours') as day,
+      SUM(CASE WHEN oi.cost_snapshot IS NOT NULL
+               THEN (oi.price_snapshot - oi.cost_snapshot) * oi.qty ELSE 0 END) as grossProfit,
+      SUM(CASE WHEN oi.cost_snapshot IS NOT NULL THEN oi.qty ELSE 0 END) as qtyWithCost,
+      SUM(oi.qty) as qtyTotal
+    FROM order_items oi
+    JOIN orders o ON o.id = oi.order_id
+    WHERE o.created_at >= ?
+      AND o.status IN (${SALES_STATUSES.map(() => "?").join(",")})
+    GROUP BY day
+  `).bind(boundaryEpoch, ...SALES_STATUSES)
+    .all<{ day: string; grossProfit: number; qtyWithCost: number; qtyTotal: number }>();
+
   const ordersByDay    = new Map(ordersResult.results.map(r => [r.day, r]));
   const customersByDay = new Map(customersResult.results.map(r => [r.day, r.count]));
+  const profitByDay    = new Map(profitResult.results.map(r => [r.day, r]));
 
   const todayKey     = wibDateKey(0);
   const yesterdayKey = wibDateKey(1);
@@ -71,6 +94,11 @@ adminRouter.get("/stats/overview", requireAdmin, async (c) => {
   const yesterdayOrders = ordersByDay.get(yesterdayKey)?.orderCount ?? 0;
   const todayCustomers     = customersByDay.get(todayKey) ?? 0;
   const yesterdayCustomers = customersByDay.get(yesterdayKey) ?? 0;
+
+  const todayProfit     = profitByDay.get(todayKey)?.grossProfit ?? 0;
+  const yesterdayProfit = profitByDay.get(yesterdayKey)?.grossProfit ?? 0;
+  const todayQtyTotal    = profitByDay.get(todayKey)?.qtyTotal ?? 0;
+  const todayQtyWithCost = profitByDay.get(todayKey)?.qtyWithCost ?? 0;
 
   const weeklyRevenue = Array.from({ length: 7 }, (_, i) => {
     const key  = wibDateKey(6 - i); // dari 6 hari lalu ke hari ini
@@ -87,6 +115,11 @@ adminRouter.get("/stats/overview", requireAdmin, async (c) => {
       newOrdersTrendPct:    pctChange(todayOrders, yesterdayOrders),
       newCustomersToday:    todayCustomers,
       newCustomersTrendPct: pctChange(todayCustomers, yesterdayCustomers),
+      grossProfitToday:     todayProfit,
+      grossProfitTrendPct:  pctChange(todayProfit, yesterdayProfit),
+      // 100 saat belum ada penjualan: tidak ada yang tidak tercakup, jadi tidak
+      // ada peringatan yang perlu ditampilkan.
+      profitCoveragePct:    todayQtyTotal === 0 ? 100 : Math.round((todayQtyWithCost / todayQtyTotal) * 100),
       weeklyRevenue,
     },
   });
