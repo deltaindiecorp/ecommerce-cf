@@ -77,9 +77,21 @@ describe("checkoutSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  it("menolak shippingCost negatif", () => {
-    const result = checkoutSchema.safeParse({ ...base, shippingCost: -1000 });
-    expect(result.success).toBe(false);
+  // Ongkir bukan lagi masukan yang dipercaya. Server menghitungnya sendiri dari
+  // kurir + layanan + berat + kota tujuan, jadi apa pun yang dikirim form
+  // pembeli harus tidak berpengaruh — termasuk nilai yang jelas-jelas ngawur.
+  it.each([0, -1000, 999999999])(
+    "mengabaikan shippingCost dari klien (%s) alih-alih memakainya",
+    (nilai) => {
+      const result = checkoutSchema.safeParse({ ...base, shippingCost: nilai });
+      expect(result.success).toBe(true);
+      expect(result.success && "shippingCost" in result.data).toBe(false);
+    },
+  );
+
+  it("mewajibkan kurir dan layanan, karena itu dasar perhitungan ongkir", () => {
+    expect(checkoutSchema.safeParse({ ...base, courier: "" }).success).toBe(false);
+    expect(checkoutSchema.safeParse({ ...base, service: "" }).success).toBe(false);
   });
 });
 

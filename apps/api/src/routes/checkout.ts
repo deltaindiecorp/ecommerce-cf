@@ -8,6 +8,7 @@ import { orders, orderItems, inventory, inventoryMovements, warehouses, products
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { generateOrderNo, createId } from "@repo/db";
 import { reserveStockLock, releaseStockLock, inventoryRowFilter } from "../services/inventory";
+import { resolveShippingRate } from "../services/shipping";
 import { checkVoucher, incrementVoucherUsage } from "../services/voucher";
 
 export const checkoutRouter = new Hono<{ Bindings: Env }>();
@@ -130,6 +131,42 @@ checkoutRouter.post("/", optionalAuth, async (c) => {
     }
   }
 
+  // ─── Ongkir (dihitung server, bukan dari form) ──────────────────────────────
+  // Gudang asal ditentukan hasil routing di atas. Kalau item tersebar di
+  // beberapa gudang, dipakai gudang item pertama — sama seperti perilaku lama
+  // yang hanya menyimpan satu ongkir per order. Memecah ongkir per gudang
+  // adalah perubahan model tersendiri, bukan bagian dari perbaikan ini.
+  const originWarehouseId = assignedItems[0]?.warehouseId;
+  const originWarehouse   = allWarehouses.find(w => w.id === originWarehouseId);
+
+  if (!originWarehouse) {
+    await releaseAcquiredLocks();
+    return c.json({ success: false, error: "Gudang pengirim tidak bisa ditentukan" }, 400);
+  }
+
+  const totalWeight = cart.items.reduce((sum, i) => sum + i.weight * i.qty, 0);
+
+  const rate = await resolveShippingRate(c.env, {
+    origin:      originWarehouse.rajaongkirCityId,
+    destination: data.shippingAddress.rajaongkirCityId,
+    weight:      Math.max(1, totalWeight),
+    courier:     data.courier,
+    service:     data.service,
+  }).catch(() => null);
+
+  // Ditolak, bukan jatuh ke nilai dari klien. Ongkir yang tidak bisa
+  // diverifikasi berarti kita tidak tahu berapa yang harus ditagih — menebak
+  // ke arah mana pun merugikan salah satu pihak.
+  if (!rate) {
+    await releaseAcquiredLocks();
+    return c.json({
+      success: false,
+      error: `Ongkir untuk ${data.courier.toUpperCase()} ${data.service} ke tujuan ini tidak bisa diverifikasi. Silakan cek ongkir ulang dan pilih layanan yang tersedia.`,
+    }, 400);
+  }
+
+  const shippingCost = rate.cost;
+
   // ─── Voucher ────────────────────────────────────────────────────────────────
   let discount = 0;
   let appliedVoucherId: string | null = null;
@@ -146,7 +183,7 @@ checkoutRouter.post("/", optionalAuth, async (c) => {
   // ─── Create Order ──────────────────────────────────────────────────────────
   const orderId       = createId();
   const orderNo       = generateOrderNo();
-  const total          = cart.subtotal + data.shippingCost - discount;
+  const total          = cart.subtotal + shippingCost - discount;
 
   await db.insert(orders).values({
     id:              orderId,
@@ -158,7 +195,7 @@ checkoutRouter.post("/", optionalAuth, async (c) => {
     status:          "pending_payment",
     shippingAddress: data.shippingAddress,
     subtotal:        cart.subtotal,
-    shippingCost:    data.shippingCost,
+    shippingCost,
     discount,
     total,
     voucherCode:     data.voucherCode ?? null,

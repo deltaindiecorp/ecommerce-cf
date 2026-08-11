@@ -20,9 +20,13 @@ export const guestInfoSchema = z.object({
 export const checkoutSchema = z.object({
   ...guestInfoSchema.shape,
   shippingAddress: shippingAddressSchema,
-  courier:        z.string(),
-  service:        z.string(),
-  shippingCost:   z.number().int().min(0),
+  courier:        z.string().min(2).max(20),
+  service:        z.string().min(1).max(30),
+  // shippingCost SENGAJA tidak ada di sini. Sebelumnya nilainya diambil dari
+  // form pembeli dan dipakai apa adanya untuk menghitung total, sehingga siapa
+  // pun bisa menyetel ongkirnya sendiri jadi nol. Server kini menghitungnya
+  // dari kurir + layanan + berat + kota tujuan. Field yang tetap dikirim form
+  // lama akan diabaikan zod, bukan menyebabkan error.
   paymentMethod:  z.enum(["midtrans", "xendit", "cod"]),
   voucherCode:    z.string().optional(),
   note:           z.string().max(500).optional(),
