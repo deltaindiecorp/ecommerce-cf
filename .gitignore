@@ -9,3 +9,8 @@ build
 .dev.vars.local
 *.local
 .DS_Store
+
+# Konfigurasi deploy per-klien hasil scripts/setup.sh — berisi ID resource
+# Cloudflare, dan sengaja tidak dilacak supaya clone klien tetap identik
+# dengan template (lihat komentar di scripts/setup.sh).
+wrangler.generated.toml
