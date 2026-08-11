@@ -4,6 +4,7 @@ import { useLoaderData, useActionData, Form, Link, useNavigation } from "@remix-
 
 import { apiFetch, apiPublic, formatApiError } from "~/lib/api";
 import { isAdminRole, useAdminRole } from "~/lib/session";
+import { Pager } from "~/components/Pager";
 
 // Margin kotor per produk. Mengembalikan null kalau modal belum diisi — sengaja
 // tidak diperlakukan sebagai 0, karena "modal belum diketahui" dan "margin 100%"
@@ -20,15 +21,19 @@ const STATUS_COLOR: Record<string, string> = {
   archived: "bg-gray-100 text-gray-600",
 };
 
+const PAGE_SIZE = 20;
+
 export async function loader({ request }: LoaderFunctionArgs) {
+  const page = Number(new URL(request.url).searchParams.get("page") ?? 1);
+
   const [productsBody, categoriesBody] = await Promise.all([
-    apiFetch<any[]>(request, "/api/admin/products?limit=50"),
+    apiFetch<any[]>(request, `/api/admin/products?page=${page}&limit=${PAGE_SIZE}`),
     apiPublic<any[]>("/api/catalog/categories"),
   ]);
 
   return json({
     products:   productsBody.data ?? [],
-    total:      productsBody.meta?.total ?? 0,
+    meta:       productsBody.meta ?? { page, limit: PAGE_SIZE, total: 0 },
     categories: categoriesBody.data ?? [],
   });
 }
@@ -80,7 +85,7 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export default function ProductsPage() {
-  const { products, total, categories } = useLoaderData<typeof loader>();
+  const { products, meta, categories } = useLoaderData<typeof loader>();
   const actionData    = useActionData<typeof action>();
   const nav           = useNavigation();
   const isSubmitting  = nav.state === "submitting";
@@ -90,7 +95,7 @@ export default function ProductsPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Manajemen Produk</h1>
-        <p className="text-sm text-gray-400">{total} produk total</p>
+        <p className="text-sm text-gray-400">{meta.total} produk total</p>
       </div>
 
       {/* Create Form */}
@@ -240,6 +245,8 @@ export default function ProductsPage() {
           </tbody>
         </table>
       </div>
+
+      <Pager page={meta.page} limit={meta.limit} total={meta.total} basePath="/products" />
     </div>
   );
 }

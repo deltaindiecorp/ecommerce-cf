@@ -3,10 +3,17 @@ import { json, redirect } from "@remix-run/cloudflare";
 import { useLoaderData, useActionData, Form, useNavigation } from "@remix-run/react";
 
 import { apiFetch, formatApiError } from "~/lib/api";
+import { Pager } from "~/components/Pager";
+
+const PAGE_SIZE = 20;
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const body = await apiFetch<any[]>(request, "/api/admin/vouchers?limit=50");
-  return json({ vouchers: body.data ?? [] });
+  const page = Number(new URL(request.url).searchParams.get("page") ?? 1);
+  const body = await apiFetch<any[]>(request, `/api/admin/vouchers?page=${page}&limit=${PAGE_SIZE}`);
+  return json({
+    vouchers: body.data ?? [],
+    meta:     body.meta ?? { page, limit: PAGE_SIZE, total: 0 },
+  });
 }
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -40,7 +47,7 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export default function VouchersPage() {
-  const { vouchers } = useLoaderData<typeof loader>();
+  const { vouchers, meta } = useLoaderData<typeof loader>();
   const actionData    = useActionData<typeof action>();
   const nav           = useNavigation();
   const isSubmitting  = nav.state === "submitting";
@@ -140,6 +147,8 @@ export default function VouchersPage() {
           </tbody>
         </table>
       </div>
+
+      <Pager page={meta.page} limit={meta.limit} total={meta.total} basePath="/vouchers" />
     </div>
   );
 }

@@ -3,7 +3,7 @@ import type { Env } from "../types/env";
 import { requireAdmin } from "../middleware/auth";
 import { createD1Client, createId } from "@repo/db";
 import { vouchers } from "@repo/db/schema";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, count } from "drizzle-orm";
 import { voucherInputSchema, voucherUpdateSchema, paginationSchema } from "@repo/shared";
 
 export const voucherAdminRouter = new Hono<{ Bindings: Env }>();
@@ -13,13 +13,24 @@ voucherAdminRouter.use("*", requireAdmin);
 // ─── GET /api/admin/vouchers ───────────────────────────────────────────────────
 voucherAdminRouter.get("/", async (c) => {
   const { page, limit } = paginationSchema.parse(c.req.query());
-  const db   = createD1Client(c.env.DB);
-  const rows = await db.select().from(vouchers)
-    .orderBy(desc(vouchers.createdAt))
-    .limit(limit)
-    .offset((page - 1) * limit);
+  const db = createD1Client(c.env.DB);
 
-  return c.json({ success: true, data: rows });
+  // `meta` sebelumnya tidak dikirim sama sekali, padahal endpointnya sudah
+  // memotong hasil per halaman — panel tidak punya cara tahu masih ada berapa,
+  // jadi penavigasinya mustahil ditampilkan.
+  const [rows, countRows] = await Promise.all([
+    db.select().from(vouchers)
+      .orderBy(desc(vouchers.createdAt))
+      .limit(limit)
+      .offset((page - 1) * limit),
+    db.select({ total: count() }).from(vouchers),
+  ]);
+
+  return c.json({
+    success: true,
+    data:    rows,
+    meta:    { page, limit, total: countRows[0]?.total ?? 0 },
+  });
 });
 
 // ─── POST /api/admin/vouchers ──────────────────────────────────────────────────
