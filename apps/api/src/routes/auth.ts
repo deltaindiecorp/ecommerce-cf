@@ -4,9 +4,9 @@ import { createD1Client } from "@repo/db";
 import { users } from "@repo/db/schema";
 import { eq } from "drizzle-orm";
 import { createId } from "@repo/db";
-import { signJwt, verifyJwt } from "../middleware/auth";
+import { signJwt, verifyJwt, isRevoked } from "../middleware/auth";
 import { rateLimit, keyByEmailFromBody } from "../middleware/rate-limit";
-import { KV_KEYS, KV_TTL } from "@repo/shared";
+import { KV_KEYS, KV_TTL, tokenTtlForRole } from "@repo/shared";
 import { z } from "zod";
 
 export const authRouter = new Hono<{ Bindings: Env }>();
@@ -66,7 +66,12 @@ authRouter.post("/login", rateLimit({ keyPrefix: "login", limit: 10, windowSec: 
   const valid = await verifyPassword(password, user.password);
   if (!valid) return c.json({ success: false, error: "Email atau password salah" }, 401);
 
-  const token = await signJwt({ sub: user.id, role: user.role }, c.env.JWT_SECRET);
+  // Umur token mengikuti peran — sesi admin/staff jauh lebih pendek.
+  const token = await signJwt(
+    { sub: user.id, role: user.role },
+    c.env.JWT_SECRET,
+    tokenTtlForRole(user.role),
+  );
 
   return c.json({
     success: true,
@@ -113,6 +118,35 @@ authRouter.post("/guest/verify-otp", rateLimit({
   return c.json({ success: true, data: { token } });
 });
 
+// ─── POST /api/auth/logout ────────────────────────────────────────────────────
+// Mencabut token yang sedang dipakai. Sebelumnya "logout" cuma menghapus cookie
+// di browser — tokennya sendiri tetap sah sampai kedaluwarsa, jadi siapa pun
+// yang sempat menyalinnya masih bisa memakainya berhari-hari.
+//
+// jti disimpan di KV sampai token itu kedaluwarsa sendiri; setelah itu entrinya
+// hilang otomatis dan tidak ada yang perlu dibersihkan.
+authRouter.post("/logout", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader?.startsWith("Bearer ")) {
+    // Tanpa token tidak ada yang perlu dicabut — tetap dianggap sukses supaya
+    // logout selalu berakhir dengan pengguna keluar, bukan pesan error.
+    return c.json({ success: true });
+  }
+
+  try {
+    const payload = await verifyJwt(authHeader.slice(7), c.env.JWT_SECRET);
+    const ttl     = payload.exp - Math.floor(Date.now() / 1000);
+
+    if (payload.jti && ttl > 0) {
+      await c.env.SESSION_KV.put(KV_KEYS.revokedToken(payload.jti), "1", { expirationTtl: Math.max(60, ttl) });
+    }
+  } catch {
+    // Token sudah tidak valid — tidak ada yang perlu dicabut.
+  }
+
+  return c.json({ success: true });
+});
+
 // ─── GET /api/auth/me ─────────────────────────────────────────────────────────
 authRouter.get("/me", async (c) => {
   const authHeader = c.req.header("Authorization");
@@ -121,6 +155,14 @@ authRouter.get("/me", async (c) => {
   }
   try {
     const payload = await verifyJwt(authHeader.slice(7), c.env.JWT_SECRET);
+
+    // Endpoint ini memverifikasi JWT sendiri, di luar requireAuth — jadi cek
+    // daftar cabut harus ikut dilakukan di sini. Tanpa itu, panel yang memakai
+    // /me untuk memvalidasi sesi akan tetap menganggap token tercabut sebagai
+    // sah, dan pengguna baru tertolak saat menyentuh endpoint data.
+    if (await isRevoked(c.env, payload.jti)) {
+      return c.json({ success: false, error: "Sesi sudah diakhiri" }, 401);
+    }
 
     // Token guest: sub-nya email, bukan user id — tidak ada baris di tabel users
     if (payload.role === "guest") {

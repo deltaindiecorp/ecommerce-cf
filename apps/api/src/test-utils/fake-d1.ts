@@ -55,6 +55,13 @@ export function makeRecordingD1(
       put: async () => undefined,
       delete: async () => undefined,
     },
+    // Dibaca middleware auth untuk cek daftar cabut token. `get` selalu null =
+    // tidak ada token yang dicabut, yang benar untuk sebagian besar test.
+    SESSION_KV: {
+      get: async () => null,
+      put: async () => undefined,
+      delete: async () => undefined,
+    },
     ...extraEnv,
   };
 

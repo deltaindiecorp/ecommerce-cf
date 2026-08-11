@@ -3,6 +3,7 @@ import { json, redirect } from "@remix-run/cloudflare";
 import { Form, useActionData, useNavigation } from "@remix-run/react";
 
 import { apiPublic } from "~/lib/api";
+import { sessionCookie, PANEL_ROLES } from "~/lib/session";
 
 export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
@@ -20,14 +21,15 @@ export async function action({ request }: ActionFunctionArgs) {
     return json({ error: "Email atau password salah" }, { status: 401 });
   }
 
-  if (result.data.user.role !== "admin") {
-    return json({ error: "Akses ditolak. Bukan akun admin." }, { status: 403 });
+  // Staff kini boleh masuk panel. Sebelumnya peran ini ditolak di sini padahal
+  // API meloloskannya untuk segalanya — wewenangnya hanya bisa dipakai lewat
+  // panggilan API langsung, tanpa jalur yang terlihat.
+  if (!PANEL_ROLES.includes(result.data.user.role)) {
+    return json({ error: "Akses ditolak. Akun ini tidak punya akses panel." }, { status: 403 });
   }
 
   return redirect("/", {
-    headers: {
-      "Set-Cookie": `admin_token=${result.data.token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
-    },
+    headers: { "Set-Cookie": sessionCookie(result.data.token) },
   });
 }
 

@@ -1,3 +1,19 @@
+// ─── Umur Token per Peran ─────────────────────────────────────────────────────
+// Sesi panel admin sengaja jauh lebih pendek daripada sesi pembeli: satu token
+// admin yang bocor bisa me-refund, menghapus produk, dan mengubah stok.
+// Sebelumnya semua peran dapat 7 hari, dan cookie admin di-set 1 hari sehingga
+// token tetap sah 6 hari setelah browser berhenti mengirimkannya.
+export const TOKEN_TTL_SEC = {
+  admin:    12 * 60 * 60,
+  staff:    12 * 60 * 60,
+  customer: 7 * 24 * 60 * 60,
+  guest:    2 * 60 * 60,
+} as const;
+
+export function tokenTtlForRole(role: string): number {
+  return TOKEN_TTL_SEC[role as keyof typeof TOKEN_TTL_SEC] ?? TOKEN_TTL_SEC.customer;
+}
+
 // ─── KV Key Prefixes ──────────────────────────────────────────────────────────
 export const KV_KEYS = {
   cart:          (id: string) => `cart:${id}`,
@@ -7,6 +23,9 @@ export const KV_KEYS = {
   productCache:  (slug: string) => `product:${slug}`,
   otpEmail:      (email: string) => `otp:${email}`,
   rajaongkirCities: "rajaongkir:cities:all",
+  // Daftar cabut token. Kunci per jti, TTL disamakan dengan sisa umur token
+  // supaya entrinya hilang sendiri saat tokennya memang sudah kedaluwarsa.
+  revokedToken: (jti: string) => `revoked:${jti}`,
 } as const;
 
 // ─── KV TTLs (seconds) ────────────────────────────────────────────────────────
