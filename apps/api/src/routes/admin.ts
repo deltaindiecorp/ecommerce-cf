@@ -1,8 +1,8 @@
 import { Hono } from "hono";
 import type { Env } from "../types/env";
-import { requireAdmin } from "../middleware/auth";
+import { requireStaff } from "../middleware/auth";
 import { createD1Client } from "@repo/db";
-import { orders, shipments, products } from "@repo/db/schema";
+import { orders, shipments, products, adminAuditLog } from "@repo/db/schema";
 import { eq, desc, like, and, sql, count } from "drizzle-orm";
 import { createId } from "@repo/db";
 import {
@@ -10,6 +10,7 @@ import {
   canTransitionOrderStatus, allowedNextStatuses,
 } from "@repo/shared";
 import { deductOrderStock, releaseOrderStock } from "../services/inventory";
+import { logAdminAction } from "../services/audit";
 
 export const adminRouter = new Hono<{ Bindings: Env }>();
 
@@ -39,7 +40,7 @@ function pctChange(today: number, yesterday: number): number {
 // Statistik dashboard — semua dihitung dari data D1 asli (bukan angka contoh):
 // penjualan/pesanan/pelanggan baru hari ini + tren vs kemarin, dan pendapatan
 // 7 hari terakhir untuk grafik. Zona waktu WIB (UTC+7).
-adminRouter.get("/stats/overview", requireAdmin, async (c) => {
+adminRouter.get("/stats/overview", requireStaff, async (c) => {
   const boundaryEpoch = Math.floor(Date.now() / 1000) - 8 * 24 * 60 * 60;
 
   const ordersResult = await c.env.DB.prepare(`
@@ -125,10 +126,39 @@ adminRouter.get("/stats/overview", requireAdmin, async (c) => {
   });
 });
 
+// ─── GET /api/admin/audit ─────────────────────────────────────────────────────
+// Riwayat aksi admin. Dibuat bersama pencatatannya, bukan menyusul — jejak
+// audit yang tidak bisa dibaca sama saja tidak ada, kesalahan yang sudah pernah
+// terjadi pada inventory_movements.
+//
+// Query `targetType` + `targetId` memberi riwayat satu objek (mis. semua aksi
+// pada satu order); tanpa keduanya jadi feed global terbaru.
+adminRouter.get("/audit", requireStaff, async (c) => {
+  const { page, limit } = paginationSchema.parse(c.req.query());
+  const { targetType, targetId, action } = c.req.query();
+
+  const db    = createD1Client(c.env.DB);
+  const conds = [];
+  if (targetType) conds.push(eq(adminAuditLog.targetType, targetType));
+  if (targetId)   conds.push(eq(adminAuditLog.targetId, targetId));
+  if (action)     conds.push(eq(adminAuditLog.action, action));
+  const where = conds.length ? and(...conds) : undefined;
+
+  const [rows, countRows] = await Promise.all([
+    db.select().from(adminAuditLog)
+      .where(where)
+      .orderBy(desc(adminAuditLog.createdAt))
+      .limit(limit).offset((page - 1) * limit),
+    db.select({ total: count() }).from(adminAuditLog).where(where),
+  ]);
+
+  return c.json({ success: true, data: rows, meta: { page, limit, total: countRows[0]?.total ?? 0 } });
+});
+
 // ─── GET /api/admin/products ───────────────────────────────────────────────────
 // Beda dari GET /api/catalog/products (publik, cuma status "active") — ini
 // menampilkan semua status (draft/active/archived) untuk dikelola admin.
-adminRouter.get("/products", requireAdmin, async (c) => {
+adminRouter.get("/products", requireStaff, async (c) => {
   const { page, limit } = paginationSchema.parse(c.req.query());
   const { search, status } = c.req.query();
 
@@ -151,7 +181,7 @@ adminRouter.get("/products", requireAdmin, async (c) => {
 });
 
 // ─── GET /api/admin/products/:id ───────────────────────────────────────────────
-adminRouter.get("/products/:id", requireAdmin, async (c) => {
+adminRouter.get("/products/:id", requireStaff, async (c) => {
   const db      = createD1Client(c.env.DB);
   const product = await db.query.products.findFirst({
     where: eq(products.id, c.req.param("id")),
@@ -162,7 +192,7 @@ adminRouter.get("/products/:id", requireAdmin, async (c) => {
 });
 
 // ─── GET /api/admin/orders ────────────────────────────────────────────────────
-adminRouter.get("/orders", requireAdmin, async (c) => {
+adminRouter.get("/orders", requireStaff, async (c) => {
   const { page, limit } = paginationSchema.parse(c.req.query());
   const { status, search } = c.req.query();
 
@@ -188,7 +218,7 @@ adminRouter.get("/orders", requireAdmin, async (c) => {
 });
 
 // ─── GET /api/admin/orders/:id ────────────────────────────────────────────────
-adminRouter.get("/orders/:id", requireAdmin, async (c) => {
+adminRouter.get("/orders/:id", requireStaff, async (c) => {
   const db    = createD1Client(c.env.DB);
   const order = await db.query.orders.findFirst({
     where: eq(orders.id, c.req.param("id")),
@@ -199,7 +229,7 @@ adminRouter.get("/orders/:id", requireAdmin, async (c) => {
 });
 
 // ─── PATCH /api/admin/orders/:id/status ───────────────────────────────────────
-adminRouter.patch("/orders/:id/status", requireAdmin, async (c) => {
+adminRouter.patch("/orders/:id/status", requireStaff, async (c) => {
   const parsed = orderStatusUpdateSchema.safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 
@@ -240,11 +270,19 @@ adminRouter.patch("/orders/:id/status", requireAdmin, async (c) => {
     await releaseOrderStock(db, orderId, c.get("userId" as any));
   }
 
+  await logAdminAction(db, {
+    actorId:    c.get("userId" as any),
+    action:     "order.status_changed",
+    targetType: "order",
+    targetId:   orderId,
+    metadata:   { orderNo: order.orderNo, from: order.status, to: status, note: note ?? null },
+  });
+
   return c.json({ success: true });
 });
 
 // ─── POST /api/admin/orders/:id/shipment ──────────────────────────────────────
-adminRouter.post("/orders/:id/shipment", requireAdmin, async (c) => {
+adminRouter.post("/orders/:id/shipment", requireStaff, async (c) => {
   const { warehouseId, courier, service, etd, cost, trackingNo } =
     await c.req.json<{
       warehouseId: string; courier: string; service: string;
@@ -273,6 +311,14 @@ adminRouter.post("/orders/:id/shipment", requireAdmin, async (c) => {
     // Enqueue resi polling
     await c.env.RESI_POLL_QUEUE.send({ type: "shipment_created", shipmentId, trackingNo, courier });
   }
+
+  await logAdminAction(db, {
+    actorId:    c.get("userId" as any),
+    action:     "order.shipment_created",
+    targetType: "order",
+    targetId:   c.req.param("id"),
+    metadata:   { shipmentId, courier, service, trackingNo: trackingNo ?? null, cost },
+  });
 
   return c.json({ success: true, data: { shipmentId } }, 201);
 });

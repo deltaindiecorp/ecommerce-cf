@@ -9,7 +9,8 @@ import {
   categoryInputSchema, categoryUpdateSchema,
   variantInputSchema, variantUpdateSchema,
 } from "@repo/shared";
-import { requireAdmin } from "../middleware/auth";
+import { requireAdmin, requireStaff } from "../middleware/auth";
+import { logAdminAction } from "../services/audit";
 
 export const catalogRouter = new Hono<{ Bindings: Env }>();
 
@@ -143,7 +144,7 @@ catalogRouter.get("/categories", async (c) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ─── POST /api/catalog/products ───────────────────────────────────────────────
-catalogRouter.post("/products", requireAdmin, async (c) => {
+catalogRouter.post("/products", requireStaff, async (c) => {
   const parsed = productInputSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 
@@ -155,7 +156,7 @@ catalogRouter.post("/products", requireAdmin, async (c) => {
 });
 
 // ─── PATCH /api/catalog/products/:id ──────────────────────────────────────────
-catalogRouter.patch("/products/:id", requireAdmin, async (c) => {
+catalogRouter.patch("/products/:id", requireStaff, async (c) => {
   const parsed = productUpdateSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 
@@ -182,13 +183,19 @@ catalogRouter.delete("/products/:id", requireAdmin, async (c) => {
   if (!current) return c.json({ success: false, error: "Produk tidak ditemukan" }, 404);
 
   await db.update(products).set({ status: "archived", updatedAt: new Date() }).where(eq(products.id, id));
+
+  await logAdminAction(db, {
+    actorId: c.get("userId" as any), action: "product.archived",
+    targetType: "product", targetId: id,
+    metadata: { name: current.name, sku: current.sku },
+  });
   await c.env.CACHE_KV.delete(KV_KEYS.productCache(current.slug));
 
   return c.json({ success: true });
 });
 
 // ─── POST /api/catalog/products/:id/variants ──────────────────────────────────
-catalogRouter.post("/products/:id/variants", requireAdmin, async (c) => {
+catalogRouter.post("/products/:id/variants", requireStaff, async (c) => {
   const parsed = variantInputSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 
@@ -205,7 +212,7 @@ catalogRouter.post("/products/:id/variants", requireAdmin, async (c) => {
 });
 
 // ─── PATCH /api/catalog/products/:id/variants/:variantId ──────────────────────
-catalogRouter.patch("/products/:id/variants/:variantId", requireAdmin, async (c) => {
+catalogRouter.patch("/products/:id/variants/:variantId", requireStaff, async (c) => {
   const parsed = variantUpdateSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 
@@ -241,7 +248,7 @@ catalogRouter.delete("/products/:id/variants/:variantId", requireAdmin, async (c
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ─── POST /api/catalog/categories ─────────────────────────────────────────────
-catalogRouter.post("/categories", requireAdmin, async (c) => {
+catalogRouter.post("/categories", requireStaff, async (c) => {
   const parsed = categoryInputSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 
@@ -253,7 +260,7 @@ catalogRouter.post("/categories", requireAdmin, async (c) => {
 });
 
 // ─── PATCH /api/catalog/categories/:id ────────────────────────────────────────
-catalogRouter.patch("/categories/:id", requireAdmin, async (c) => {
+catalogRouter.patch("/categories/:id", requireStaff, async (c) => {
   const parsed = categoryUpdateSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 

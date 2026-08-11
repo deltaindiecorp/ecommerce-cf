@@ -3,6 +3,7 @@ import { json, redirect } from "@remix-run/cloudflare";
 import { useLoaderData, useActionData, Form, Link, useNavigation } from "@remix-run/react";
 
 import { apiFetch, apiPublic, formatApiError } from "~/lib/api";
+import { isAdminRole, useAdminRole } from "~/lib/session";
 
 // Margin kotor per produk. Mengembalikan null kalau modal belum diisi — sengaja
 // tidak diperlakukan sebagai 0, karena "modal belum diketahui" dan "margin 100%"
@@ -83,6 +84,7 @@ export default function ProductsPage() {
   const actionData    = useActionData<typeof action>();
   const nav           = useNavigation();
   const isSubmitting  = nav.state === "submitting";
+  const isAdmin       = isAdminRole(useAdminRole());
 
   return (
     <div>
@@ -224,7 +226,7 @@ export default function ProductsPage() {
                         <button type="submit" className="text-green-600 hover:underline text-xs">Aktifkan</button>
                       </Form>
                     )}
-                    {p.status !== "archived" && (
+                    {isAdmin && p.status !== "archived" && (
                       <Form method="post" className="inline">
                         <input type="hidden" name="intent" value="archive" />
                         <input type="hidden" name="id" value={p.id} />

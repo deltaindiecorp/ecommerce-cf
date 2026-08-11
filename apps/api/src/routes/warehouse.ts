@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../types/env";
-import { requireAdmin } from "../middleware/auth";
+import { requireAdmin, requireStaff } from "../middleware/auth";
 import { createD1Client } from "@repo/db";
 import { warehouses, inventory, warehouseTransfers, inventoryMovements, products, productVariants, users } from "@repo/db/schema";
 import { eq, and, sql, desc, count } from "drizzle-orm";
@@ -10,11 +10,12 @@ import {
   warehouseTransferSchema, paginationSchema,
 } from "@repo/shared";
 import { inventoryRowFilter } from "../services/inventory";
+import { logAdminAction } from "../services/audit";
 
 export const warehouseRouter = new Hono<{ Bindings: Env }>();
 
 // ─── GET /api/warehouse ───────────────────────────────────────────────────────
-warehouseRouter.get("/", requireAdmin, async (c) => {
+warehouseRouter.get("/", requireStaff, async (c) => {
   const db   = createD1Client(c.env.DB);
   const rows = await db.select().from(warehouses).orderBy(warehouses.priority);
   return c.json({ success: true, data: rows });
@@ -37,6 +38,12 @@ warehouseRouter.post("/", requireAdmin, async (c) => {
   const id = createId();
   await db.insert(warehouses).values({ id, ...parsed.data });
 
+  await logAdminAction(db, {
+    actorId: c.get("userId" as any), action: "warehouse.created",
+    targetType: "warehouse", targetId: id,
+    metadata: { name: parsed.data.name, code: parsed.data.code },
+  });
+
   return c.json({ success: true, data: { id } }, 201);
 });
 
@@ -58,6 +65,12 @@ warehouseRouter.patch("/:id", requireAdmin, async (c) => {
   }
 
   await db.update(warehouses).set(parsed.data).where(eq(warehouses.id, id));
+
+  await logAdminAction(db, {
+    actorId: c.get("userId" as any), action: "warehouse.updated",
+    targetType: "warehouse", targetId: id,
+    metadata: { name: current.name, changed: Object.keys(parsed.data) },
+  });
 
   return c.json({ success: true });
 });
@@ -90,11 +103,17 @@ warehouseRouter.delete("/:id", requireAdmin, async (c) => {
 
   await db.update(warehouses).set({ isActive: false }).where(eq(warehouses.id, id));
 
+  await logAdminAction(db, {
+    actorId: c.get("userId" as any), action: "warehouse.deactivated",
+    targetType: "warehouse", targetId: id,
+    metadata: { name: current.name, code: current.code },
+  });
+
   return c.json({ success: true });
 });
 
 // ─── GET /api/warehouse/:id/inventory ────────────────────────────────────────
-warehouseRouter.get("/:id/inventory", requireAdmin, async (c) => {
+warehouseRouter.get("/:id/inventory", requireStaff, async (c) => {
   const db   = createD1Client(c.env.DB);
   const rows = await db.query.inventory.findMany({
     where: eq(inventory.warehouseId, c.req.param("id")),
@@ -107,7 +126,7 @@ warehouseRouter.get("/:id/inventory", requireAdmin, async (c) => {
 // Kartu stok. Tabel inventory_movements sudah ditulis rajin sejak awal tapi
 // tidak pernah dibaca satu endpoint pun — ledger yang tidak bisa dilihat sama
 // saja tidak ada. Ini yang menjawab "kenapa stoknya berubah, kapan, oleh siapa".
-warehouseRouter.get("/:id/movements", requireAdmin, async (c) => {
+warehouseRouter.get("/:id/movements", requireStaff, async (c) => {
   const { page, limit } = paginationSchema.parse(c.req.query());
   const { productId, type } = c.req.query();
 
@@ -157,7 +176,7 @@ warehouseRouter.get("/:id/movements", requireAdmin, async (c) => {
 // ─── POST /api/warehouse/:id/inventory/adjust ─────────────────────────────────
 // Stok masuk / koreksi manual (mis. barang baru datang, opname). qty positif =
 // tambah, negatif = kurangi. Berbeda dari /transfer yang memindah stok ANTAR gudang.
-warehouseRouter.post("/:id/inventory/adjust", requireAdmin, async (c) => {
+warehouseRouter.post("/:id/inventory/adjust", requireStaff, async (c) => {
   const parsed = inventoryAdjustSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 
@@ -221,7 +240,7 @@ warehouseRouter.post("/:id/inventory/adjust", requireAdmin, async (c) => {
 // sama bisa terjual ke pembeli di tengah proses.
 
 // ─── POST /api/warehouse/transfer ────────────────────────────────────────────
-warehouseRouter.post("/transfer", requireAdmin, async (c) => {
+warehouseRouter.post("/transfer", requireStaff, async (c) => {
   const parsed = warehouseTransferSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 
@@ -270,7 +289,7 @@ warehouseRouter.post("/transfer", requireAdmin, async (c) => {
 });
 
 // ─── PATCH /api/warehouse/transfer/:id/complete ───────────────────────────────
-warehouseRouter.patch("/transfer/:id/complete", requireAdmin, async (c) => {
+warehouseRouter.patch("/transfer/:id/complete", requireStaff, async (c) => {
   const db       = createD1Client(c.env.DB);
   const transfer = await db.query.warehouseTransfers.findFirst({
     where: eq(warehouseTransfers.id, c.req.param("id")),
@@ -334,7 +353,7 @@ warehouseRouter.patch("/transfer/:id/complete", requireAdmin, async (c) => {
 // ─── PATCH /api/warehouse/transfer/:id/cancel ─────────────────────────────────
 // Wajib ada sejak transfer pending mengunci stok: tanpa jalur ini, transfer yang
 // batal di dunia nyata akan menahan stoknya selamanya tanpa cara melepas.
-warehouseRouter.patch("/transfer/:id/cancel", requireAdmin, async (c) => {
+warehouseRouter.patch("/transfer/:id/cancel", requireStaff, async (c) => {
   const db       = createD1Client(c.env.DB);
   const transfer = await db.query.warehouseTransfers.findFirst({
     where: eq(warehouseTransfers.id, c.req.param("id")),

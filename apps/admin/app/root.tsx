@@ -7,6 +7,7 @@ import { json, redirect } from "@remix-run/cloudflare";
 import stylesheet from "./tailwind.css?url";
 
 import { apiFetch, getToken } from "~/lib/api";
+import { PANEL_ROLES } from "~/lib/session";
 
 export const links: LinksFunction = () => [{ rel: "stylesheet", href: stylesheet }];
 
@@ -21,7 +22,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   // berakhir sebagai redirect diam-diam ke halaman login yang membingungkan.
   const body = await apiFetch<{ role?: string; name?: string }>(request, "/api/auth/me");
 
-  if (!body.success || body.data?.role !== "admin") return redirect("/login");
+  if (!body.success || !PANEL_ROLES.includes(body.data?.role ?? "")) return redirect("/login");
 
   return json({ authenticated: true, user: body.data });
 }
@@ -32,7 +33,7 @@ const NAV_ITEMS = [
   { href: "/warehouse",  label: "Gudang",     icon: "🏭" },
   { href: "/products",   label: "Produk",     icon: "📦" },
   { href: "/categories", label: "Kategori",   icon: "🗂️" },
-  { href: "/vouchers",   label: "Voucher",    icon: "🎟️" },
+  { href: "/vouchers",   label: "Voucher",    icon: "🎟️", adminOnly: true },
 ];
 
 function getInitials(name?: string | null): string {
@@ -80,7 +81,7 @@ export default function AdminRoot() {
           </div>
 
           <nav className="flex flex-col gap-1 flex-1 mt-2">
-            {NAV_ITEMS.map(item => {
+            {NAV_ITEMS.filter(item => !item.adminOnly || user?.role === "admin").map(item => {
               const isActive = location.pathname === item.href || (item.href !== "/" && location.pathname.startsWith(item.href));
               return (
                 <Link

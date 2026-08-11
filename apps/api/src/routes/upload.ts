@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../types/env";
-import { requireAdmin } from "../middleware/auth";
+import { requireAdmin, requireStaff } from "../middleware/auth";
 import { createId } from "@repo/db";
 import { detectImageType, IMAGE_EXTENSION } from "../lib/image-type";
 
@@ -9,7 +9,7 @@ export const uploadRouter = new Hono<{ Bindings: Env }>();
 const MAX_SIZE_BYTES = 5 * 1024 * 1024; // 5MB
 
 // ─── POST /api/upload/product-image ───────────────────────────────────────────
-uploadRouter.post("/product-image", requireAdmin, async (c) => {
+uploadRouter.post("/product-image", requireStaff, async (c) => {
   const formData = await c.req.formData();
   // @cloudflare/workers-types mengetik FormData.get() sebagai `string | null` saja,
   // padahal runtime-nya bisa mengembalikan File untuk multipart file field.
