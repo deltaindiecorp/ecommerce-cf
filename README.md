@@ -126,4 +126,10 @@ Schema Drizzle **tidak perlu diubah** — hanya dialect yang berbeda.
 
 ## Lisensi
 
-[Apache License 2.0](LICENSE)
+Copyright 2026 Delta Indie
+
+Dilisensikan di bawah [Apache License 2.0](LICENSE). Bebas dipakai, dimodifikasi,
+dan didistribusikan termasuk untuk keperluan komersial, selama pemberitahuan hak
+cipta dan lisensinya dipertahankan.
+
+Merek dagang tidak termasuk dalam lisensi — lihat [NOTICE](NOTICE).

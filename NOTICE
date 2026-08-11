@@ -1,0 +1,32 @@
+Deltacommerce — Platform E-commerce Cloudflare
+Copyright 2026 Delta Indie
+
+Produk ini mencakup perangkat lunak yang dikembangkan oleh Delta Indie.
+
+Dilisensikan di bawah Apache License, Version 2.0 (the "License");
+Anda tidak boleh menggunakan berkas dalam project ini kecuali sesuai dengan
+License. Salinan License tersedia di:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Kecuali diwajibkan hukum yang berlaku atau disepakati tertulis, perangkat
+lunak yang didistribusikan di bawah License ini disediakan "SEBAGAIMANA
+ADANYA", TANPA JAMINAN ATAU KETENTUAN APA PUN, baik tersurat maupun tersirat.
+
+--------------------------------------------------------------------------
+Merek Dagang
+
+Apache License 2.0 Pasal 6 tidak memberikan izin penggunaan merek dagang.
+Nama "Deltacommerce" dan "Delta Indie" beserta logonya bukan bagian dari
+lisensi ini.
+
+Anda bebas memakai, memodifikasi, dan mendistribusikan kodenya — termasuk
+untuk keperluan komersial — tetapi tidak untuk menyatakan atau menyiratkan
+bahwa hasilnya adalah produk resmi Delta Indie.
+
+--------------------------------------------------------------------------
+Instance Turunan
+
+Merek dagang, logo, dan aset milik pihak yang men-deploy instance sendiri
+(mis. toko klien) TIDAK dilisensikan lewat repo ini dan tidak boleh disimpan
+di dalamnya. Aset semacam itu milik pemegang mereknya masing-masing.
