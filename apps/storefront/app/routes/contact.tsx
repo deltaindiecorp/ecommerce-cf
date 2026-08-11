@@ -1,7 +1,8 @@
 import type { MetaFunction } from "@remix-run/cloudflare";
 import { StaticPage } from "~/components/StaticPage";
+import { pageTitle } from "~/lib/meta";
 
-export const meta: MetaFunction = () => [{ title: "Contact Support - Deltacommerce" }];
+export const meta: MetaFunction = ({ matches }) => pageTitle(matches, "Contact Support");
 
 export default function ContactPage() {
   return (

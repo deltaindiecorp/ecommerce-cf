@@ -2,12 +2,18 @@ import {
   Links, Meta, Outlet, Scripts, ScrollRestoration, Link,
   isRouteErrorResponse, useRouteError,
 } from "@remix-run/react";
-import type { LinksFunction, LoaderFunctionArgs } from "@remix-run/cloudflare";
+import type { LinksFunction, LoaderFunctionArgs, MetaFunction } from "@remix-run/cloudflare";
 import { json } from "@remix-run/cloudflare";
 import stylesheet from "./tailwind.css?url";
 import { apiFetch } from "~/lib/api";
+import { FALLBACK_STORE_NAME } from "~/lib/meta";
 
 export const links: LinksFunction = () => [{ rel: "stylesheet", href: stylesheet }];
+
+// Judul bawaan untuk halaman yang tidak punya `meta` sendiri (beranda,
+// keranjang, checkout). Route anak yang mengekspor meta akan menimpanya.
+export const meta: MetaFunction = ({ data }) =>
+  [{ title: (data as { store?: { storeName?: string } } | undefined)?.store?.storeName ?? FALLBACK_STORE_NAME }];
 
 // Kategori + jumlah item cart dipakai di header & bottom nav setiap halaman —
 // diambil sekali di root loader supaya tidak setiap route fetch sendiri-sendiri.
