@@ -1,8 +1,11 @@
-import { Links, Meta, Outlet, Scripts, ScrollRestoration } from "@remix-run/react";
+import {
+  Links, Meta, Outlet, Scripts, ScrollRestoration, Link,
+  isRouteErrorResponse, useRouteError,
+} from "@remix-run/react";
 import type { LinksFunction, LoaderFunctionArgs } from "@remix-run/cloudflare";
 import { json } from "@remix-run/cloudflare";
 import stylesheet from "./tailwind.css?url";
-import { API_BASE } from "~/lib/config";
+import { apiFetch } from "~/lib/api";
 
 export const links: LinksFunction = () => [{ rel: "stylesheet", href: stylesheet }];
 
@@ -11,16 +14,15 @@ export const links: LinksFunction = () => [{ rel: "stylesheet", href: stylesheet
 export async function loader({ request }: LoaderFunctionArgs) {
   const cartId = request.headers.get("Cookie")?.match(/cartId=([^;]+)/)?.[1];
 
-  const [categoriesRes, cartRes] = await Promise.all([
-    fetch(`${API_BASE}/api/catalog/categories`),
-    cartId ? fetch(`${API_BASE}/api/cart`, { headers: { "X-Cart-Id": cartId } }) : Promise.resolve(null),
+  const [categoriesBody, cartBody] = await Promise.all([
+    apiFetch<any[]>(request, "/api/catalog/categories"),
+    cartId
+      ? apiFetch<{ itemCount?: number }>(request, "/api/cart", { headers: { "X-Cart-Id": cartId } })
+      : Promise.resolve(null),
   ]);
 
-  const categoriesBody = await categoriesRes.json() as any;
-  const cartBody = cartRes ? await cartRes.json() as any : null;
-
   return json({
-    categories:    categoriesBody.success ? categoriesBody.data : [],
+    categories:    categoriesBody.data ?? [],
     cartItemCount: cartBody?.data?.itemCount ?? 0,
   });
 }
@@ -37,6 +39,54 @@ export default function App() {
       <body>
         <Outlet />
         <ScrollRestoration />
+        <Scripts />
+      </body>
+    </html>
+  );
+}
+
+// ─── Error Boundary ───────────────────────────────────────────────────────────
+// Storefront sebelumnya tidak punya ini sama sekali. Kegagalan loader apa pun —
+// API mati, respons HTML alih-alih JSON — berujung layar error bawaan Remix
+// tanpa gaya: halaman putih dengan tumpukan stack untuk calon pembeli.
+//
+// Nada pesannya sengaja berbeda dari panel admin. Pembeli tidak bisa berbuat
+// apa-apa soal API yang mati dan tidak perlu tahu detail teknisnya; yang
+// dibutuhkan cuma kepastian bahwa ini bukan salah mereka dan jalan keluarnya.
+export function ErrorBoundary() {
+  const error = useRouteError();
+
+  let title  = "Ada gangguan sesaat";
+  let detail = "Kami sedang memperbaikinya. Coba muat ulang beberapa saat lagi.";
+
+  if (isRouteErrorResponse(error) && error.status === 404) {
+    title  = "Halaman tidak ditemukan";
+    detail = "Halaman yang Anda cari tidak ada atau sudah dipindahkan.";
+  }
+
+  return (
+    <html lang="id">
+      <head>
+        <meta charSet="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>{title}</title>
+        <Meta />
+        <Links />
+      </head>
+      <body className="bg-gray-50">
+        <div className="min-h-screen flex items-center justify-center p-6">
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 max-w-md w-full p-8 text-center">
+            <p className="text-4xl mb-4">🛠️</p>
+            <h1 className="text-xl font-bold text-gray-800 mb-2">{title}</h1>
+            <p className="text-sm text-gray-600 mb-6">{detail}</p>
+            <Link
+              to="/"
+              className="inline-block bg-blue-600 text-white px-6 py-3 rounded-xl font-medium hover:bg-blue-700"
+            >
+              Kembali ke Beranda
+            </Link>
+          </div>
+        </div>
         <Scripts />
       </body>
     </html>
