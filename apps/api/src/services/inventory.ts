@@ -38,6 +38,23 @@ function itemKey(productId: string, variantId?: string | null): string {
   return `${productId}:${variantId ?? "__base__"}`;
 }
 
+// ─── Penulisan atomik ─────────────────────────────────────────────────────────
+// Perubahan stok dan catatan ledger-nya harus jadi bersamaan. Kalau stok
+// bergeser tanpa baris movement, kartu stok jadi bohong: angkanya berubah tanpa
+// penjelasan siapa pun. Kalau movement tertulis tanpa perubahan stok, ledger
+// mengklaim sesuatu yang tidak pernah terjadi.
+//
+// Seluruh item satu order digabung dalam satu batch, bukan per item — potongan
+// stok sebagian untuk satu order adalah keadaan yang paling sulit ditelusuri.
+type BatchOp = Parameters<DbClient["batch"]>[0][number];
+
+async function runBatch(db: DbClient, ops: BatchOp[]): Promise<void> {
+  // D1 menolak batch kosong, dan kosong memang wajar terjadi di sini: semua
+  // item bisa saja sudah diproses lebih dulu (idempotensi).
+  if (ops.length === 0) return;
+  await db.batch(ops as [BatchOp, ...BatchOp[]]);
+}
+
 // Item mana dari order ini yang sudah pernah diproses untuk `type` tertentu.
 // Dicek per item (bukan per order) supaya kalau proses mati di tengah loop,
 // pemanggilan ulang tetap menyelesaikan sisa item tanpa mengulang yang sudah
@@ -106,29 +123,35 @@ export async function releaseOrderStock(db: DbClient, orderId: string, actorId?:
   const items   = await db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
   const applied = await appliedItemKeys(db, orderId, "release");
 
+  const ops: BatchOp[] = [];
+
   for (const item of items) {
     if (applied.has(itemKey(item.productId, item.variantId))) continue;
 
-    await db.update(inventory)
-      .set({
-        qtyReserved: sql`MAX(0, qty_reserved - ${item.qty})`,
-        updatedAt:   new Date(),
-      })
-      .where(inventoryRowFilter(item.warehouseId, item.productId, item.variantId));
+    ops.push(
+      db.update(inventory)
+        .set({
+          qtyReserved: sql`MAX(0, qty_reserved - ${item.qty})`,
+          updatedAt:   new Date(),
+        })
+        .where(inventoryRowFilter(item.warehouseId, item.productId, item.variantId)),
 
-    await db.insert(inventoryMovements).values({
-      id:          createId(),
-      warehouseId: item.warehouseId,
-      productId:   item.productId,
-      variantId:   item.variantId ?? null,
-      type:        "release",
-      qty:         item.qty,
-      refType:     "order",
-      refId:       orderId,
-      createdBy:   actorId ?? null,
-      note:        "Release stok - order dibatalkan",
-    });
+      db.insert(inventoryMovements).values({
+        id:          createId(),
+        warehouseId: item.warehouseId,
+        productId:   item.productId,
+        variantId:   item.variantId ?? null,
+        type:        "release",
+        qty:         item.qty,
+        refType:     "order",
+        refId:       orderId,
+        createdBy:   actorId ?? null,
+        note:        "Release stok - order dibatalkan",
+      }),
+    );
   }
+
+  await runBatch(db, ops);
 }
 
 // Mengubah reservasi jadi pengurangan stok riil — barang benar-benar keluar
@@ -143,29 +166,35 @@ export async function deductOrderStock(db: DbClient, orderId: string, actorId?: 
   const items   = await db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
   const applied = await appliedItemKeys(db, orderId, "out");
 
+  const ops: BatchOp[] = [];
+
   for (const item of items) {
     if (applied.has(itemKey(item.productId, item.variantId))) continue;
 
-    // Reservasi dilepas sekaligus stok fisik dipotong — barangnya keluar rak
-    await db.update(inventory)
-      .set({
-        qtyReserved: sql`MAX(0, qty_reserved - ${item.qty})`,
-        qtyOnHand:   sql`MAX(0, qty_on_hand - ${item.qty})`,
-        updatedAt:   new Date(),
-      })
-      .where(inventoryRowFilter(item.warehouseId, item.productId, item.variantId));
+    ops.push(
+      // Reservasi dilepas sekaligus stok fisik dipotong — barangnya keluar rak
+      db.update(inventory)
+        .set({
+          qtyReserved: sql`MAX(0, qty_reserved - ${item.qty})`,
+          qtyOnHand:   sql`MAX(0, qty_on_hand - ${item.qty})`,
+          updatedAt:   new Date(),
+        })
+        .where(inventoryRowFilter(item.warehouseId, item.productId, item.variantId)),
 
-    await db.insert(inventoryMovements).values({
-      id:          createId(),
-      warehouseId: item.warehouseId,
-      productId:   item.productId,
-      variantId:   item.variantId ?? null,
-      type:        "out",
-      qty:         item.qty,
-      refType:     "order",
-      refId:       orderId,
-      createdBy:   actorId ?? null,
-      note:        "Stok keluar - order dikirim",
-    });
+      db.insert(inventoryMovements).values({
+        id:          createId(),
+        warehouseId: item.warehouseId,
+        productId:   item.productId,
+        variantId:   item.variantId ?? null,
+        type:        "out",
+        qty:         item.qty,
+        refType:     "order",
+        refId:       orderId,
+        createdBy:   actorId ?? null,
+        note:        "Stok keluar - order dikirim",
+      }),
+    );
   }
+
+  await runBatch(db, ops);
 }

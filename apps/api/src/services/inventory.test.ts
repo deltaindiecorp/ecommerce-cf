@@ -11,7 +11,10 @@ import { deductOrderStock, releaseOrderStock } from "./inventory";
 // dihasilkan drizzle. Kalau filter WHERE-nya salah lagi (mis. cuma warehouse_id),
 // test ini gagal — bukan sekadar memverifikasi mock yang ikut ditulis salah.
 
-type Recorded = { sql: string; params: unknown[]; method: string };
+// batchIndex: nomor batch tempat statement ini dijalankan, atau null kalau
+// dieksekusi sendiri di luar batch. Inilah yang membedakan "dua penulisan
+// berurutan" dari "satu transaksi".
+type Recorded = { sql: string; params: unknown[]; method: string; batchIndex: number | null };
 
 type FakeItem = {
   warehouseId: string;
@@ -30,22 +33,41 @@ function makeDb(opts: {
 }) {
   const calls: Recorded[] = [];
 
-  const db = drizzle(async (sql, params, method) => {
-    calls.push({ sql, params, method });
-
+  const rowsFor = (sql: string, method: string) => {
     if (sql.includes("order_items")) {
-      return { rows: opts.items.map(i => positionalRow(i as unknown as Record<string, unknown>)) };
+      return opts.items.map(i => positionalRow(i as unknown as Record<string, unknown>));
     }
     if (sql.includes("inventory_movements") && method !== "run") {
-      return { rows: (opts.applied ?? []).map(m => [m.productId, m.variantId]) };
+      return (opts.applied ?? []).map(m => [m.productId, m.variantId]);
     }
-    return { rows: [] };
-  });
+    return [];
+  };
+
+  let batchCount = 0;
+
+  const db = drizzle(
+    async (sql, params, method) => {
+      calls.push({ sql, params, method, batchIndex: null });
+      return { rows: rowsFor(sql, method) };
+    },
+    async (statements) => {
+      const idx = batchCount++;
+      for (const st of statements) {
+        calls.push({ sql: st.sql, params: st.params, method: st.method, batchIndex: idx });
+      }
+      return statements.map(st => ({ rows: rowsFor(st.sql, st.method) }));
+    },
+  );
 
   const inventoryUpdates = () =>
     calls.filter(c => c.sql.includes('update "inventory"') && !c.sql.includes("inventory_movements"));
 
-  return { db: db as unknown as DbClient, calls, inventoryUpdates };
+  const movementInserts = () =>
+    calls.filter(c => c.sql.includes("insert into \"inventory_movements\""));
+
+  const batchCountOf = () => batchCount;
+
+  return { db: db as unknown as DbClient, calls, inventoryUpdates, movementInserts, batchCountOf };
 }
 
 const ITEM_A: FakeItem = { warehouseId: "wh-jkt", productId: "prod-a", variantId: null,        qty: 2 };
@@ -122,6 +144,33 @@ describe("deductOrderStock", () => {
     const updates = inventoryUpdates();
     expect(updates).toHaveLength(1);
     expect(updates[0].params).toContain("var-biru");
+  });
+
+  it("menulis perubahan stok dan ledger dalam SATU batch atomik", async () => {
+    const { db, inventoryUpdates, movementInserts, batchCountOf } = makeDb({ items: [ITEM_A, ITEM_B] });
+    await deductOrderStock(db, "order-1");
+
+    const update = inventoryUpdates();
+    const ledger = movementInserts().filter(c => c.method === "run");
+
+    // Dua item = 2 update + 2 insert, semuanya harus di batch yang sama.
+    expect(update).toHaveLength(2);
+    expect(ledger).toHaveLength(2);
+    expect(batchCountOf()).toBe(1);
+
+    const semua = [...update, ...ledger];
+    expect(semua.every(c => c.batchIndex === 0)).toBe(true);
+  });
+
+  it("tidak memanggil batch sama sekali kalau semua item sudah diproses", async () => {
+    const { db, batchCountOf } = makeDb({
+      items:   [ITEM_A],
+      applied: [{ productId: "prod-a", variantId: null }],
+    });
+    await deductOrderStock(db, "order-1");
+
+    // D1 menolak batch kosong — ini yang menjaganya tidak pernah terkirim.
+    expect(batchCountOf()).toBe(0);
   });
 
   it("mencatat aktor pada ledger saat diberikan", async () => {

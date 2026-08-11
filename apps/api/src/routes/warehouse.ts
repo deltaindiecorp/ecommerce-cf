@@ -194,32 +194,35 @@ warehouseRouter.post("/:id/inventory/adjust", requireStaff, async (c) => {
     where: inventoryRowFilter(warehouseId, productId, variantId),
   });
 
-  if (existing) {
-    await db.update(inventory)
-      .set({
-        qtyOnHand: sql`MAX(0, qty_on_hand + ${qty})`,
-        updatedAt: new Date(),
-      })
-      .where(eq(inventory.id, existing.id));
-  } else {
-    if (qty < 0) return c.json({ success: false, error: "Stok belum ada, tidak bisa dikurangi" }, 400);
-    await db.insert(inventory).values({
-      id: createId(), warehouseId, productId, variantId: variantId ?? null,
-      qtyOnHand: qty, qtyReserved: 0,
-    });
+  if (!existing && qty < 0) {
+    return c.json({ success: false, error: "Stok belum ada, tidak bisa dikurangi" }, 400);
   }
 
+  // Perubahan stok dan catatan ledger-nya menyatu. Kalau stok berubah tanpa
+  // baris movement, kartu stok jadi bohong: angkanya bergeser tanpa ada
+  // penjelasan siapa pun — persis yang paling sulit ditelusuri saat opname.
+  //
   // Tipe diambil dari maksud yang dinyatakan admin, bukan disimpulkan dari tanda
   // qty. Barang datang dari supplier dan koreksi opname yang naik dua-duanya
   // positif, tapi artinya berbeda dan laporan stok harus bisa memisahkannya.
-  await db.insert(inventoryMovements).values({
-    id: createId(), warehouseId, productId, variantId: variantId ?? null,
-    type:      movementType,
-    qty:       Math.abs(qty),
-    refType:   "adjustment",
-    createdBy: c.get("userId" as any) ?? null,
-    note:      note ?? (movementType === "in" ? "Stok masuk" : "Koreksi opname"),
-  });
+  await db.batch([
+    existing
+      ? db.update(inventory)
+          .set({ qtyOnHand: sql`MAX(0, qty_on_hand + ${qty})`, updatedAt: new Date() })
+          .where(eq(inventory.id, existing.id))
+      : db.insert(inventory).values({
+          id: createId(), warehouseId, productId, variantId: variantId ?? null,
+          qtyOnHand: qty, qtyReserved: 0,
+        }),
+    db.insert(inventoryMovements).values({
+      id: createId(), warehouseId, productId, variantId: variantId ?? null,
+      type:      movementType,
+      qty:       Math.abs(qty),
+      refType:   "adjustment",
+      createdBy: c.get("userId" as any) ?? null,
+      note:      note ?? (movementType === "in" ? "Stok masuk" : "Koreksi opname"),
+    }),
+  ]);
 
   return c.json({ success: true });
 });
@@ -264,26 +267,30 @@ warehouseRouter.post("/transfer", requireStaff, async (c) => {
   }
 
   const transferId = createId();
-  await db.insert(warehouseTransfers).values({
-    id: transferId, fromWarehouse, toWarehouse,
-    productId, variantId: variantId ?? null,
-    qty, status: "pending",
-    requestedBy: c.get("userId" as any),
-    note: note ?? null,
-  });
+  const actorId    = c.get("userId" as any) ?? null;
 
-  // Kunci stoknya selama transfer masih pending
-  await db.update(inventory)
-    .set({ qtyReserved: sql`qty_reserved + ${qty}`, updatedAt: new Date() })
-    .where(inventoryRowFilter(fromWarehouse, productId, variantId));
-
-  await db.insert(inventoryMovements).values({
-    id: createId(), warehouseId: fromWarehouse, productId,
-    variantId: variantId ?? null, type: "reserve",
-    qty, refType: "transfer", refId: transferId,
-    createdBy: c.get("userId" as any) ?? null,
-    note: "Reservasi untuk transfer antar gudang",
-  });
+  // Baris transfer dan penguncian stoknya harus jadi bersamaan. Kalau hanya
+  // salah satu yang tertulis: transfer tanpa reservasi berarti stoknya masih
+  // bisa terjual, sedangkan reservasi tanpa baris transfer berarti stok
+  // terkunci selamanya tanpa ada yang bisa menyelesaikan atau membatalkannya.
+  await db.batch([
+    db.insert(warehouseTransfers).values({
+      id: transferId, fromWarehouse, toWarehouse,
+      productId, variantId: variantId ?? null,
+      qty, status: "pending",
+      requestedBy: actorId,
+      note: note ?? null,
+    }),
+    db.update(inventory)
+      .set({ qtyReserved: sql`qty_reserved + ${qty}`, updatedAt: new Date() })
+      .where(inventoryRowFilter(fromWarehouse, productId, variantId)),
+    db.insert(inventoryMovements).values({
+      id: createId(), warehouseId: fromWarehouse, productId,
+      variantId: variantId ?? null, type: "reserve",
+      qty, refType: "transfer", refId: transferId, createdBy: actorId,
+      note: "Reservasi untuk transfer antar gudang",
+    }),
+  ]);
 
   return c.json({ success: true, data: { transferId, status: "pending" } }, 201);
 });
@@ -300,52 +307,62 @@ warehouseRouter.patch("/transfer/:id/complete", requireStaff, async (c) => {
   }
 
   const { fromWarehouse, toWarehouse, productId, variantId, qty } = transfer;
+  const actorId = c.get("userId" as any) ?? null;
 
-  // Gudang asal: lepas reservasi DAN kurangi stok fisik. MAX(0, ...) mencegah
-  // nilai negatif kalau ada koreksi manual di tengah jalan.
-  await db.update(inventory)
-    .set({
-      qtyReserved: sql`MAX(0, qty_reserved - ${qty})`,
-      qtyOnHand:   sql`MAX(0, qty_on_hand - ${qty})`,
-      updatedAt:   new Date(),
-    })
-    .where(inventoryRowFilter(fromWarehouse, productId, variantId));
-
-  // Gudang tujuan: upsert baris yang tepat (per varian, bukan per produk)
+  // Baca dulu untuk memutuskan upsert; ini satu-satunya bagian yang tidak bisa
+  // masuk batch karena hasilnya menentukan bentuk penulisannya.
   const destInv = await db.query.inventory.findFirst({
     where: inventoryRowFilter(toWarehouse, productId, variantId),
   });
 
-  if (destInv) {
-    await db.update(inventory)
+  // SELURUH penulisan dijalankan sebagai satu transaksi D1.
+  //
+  // Sebelumnya lima penulisan berurutan dengan status transfer diset di
+  // penulisan TERAKHIR. Kalau Worker mati di tengah — dan Worker memang bisa
+  // dihentikan kapan saja karena batas CPU atau deploy — hasilnya: stok gudang
+  // asal sudah berkurang, gudang tujuan belum bertambah (stok lenyap), status
+  // masih "pending" sehingga transfer bisa diulang, dan pengulangannya
+  // mengurangi stok asal untuk KEDUA kalinya.
+  //
+  // Idempotensi tidak menyelesaikan ini: penjaganya justru status transfer,
+  // yang ikut gagal tertulis. Yang dibutuhkan atomisitas.
+  await db.batch([
+    // Gudang asal: lepas reservasi DAN kurangi stok fisik. MAX(0, ...) mencegah
+    // nilai negatif kalau ada koreksi manual di tengah jalan.
+    db.update(inventory)
       .set({
-        qtyOnHand: sql`qty_on_hand + ${qty}`,
-        updatedAt: new Date(),
+        qtyReserved: sql`MAX(0, qty_reserved - ${qty})`,
+        qtyOnHand:   sql`MAX(0, qty_on_hand - ${qty})`,
+        updatedAt:   new Date(),
       })
-      .where(eq(inventory.id, destInv.id));
-  } else {
-    await db.insert(inventory).values({
-      id: createId(), warehouseId: toWarehouse,
-      productId, variantId: variantId ?? null,
-      qtyOnHand: qty, qtyReserved: 0,
-    });
-  }
+      .where(inventoryRowFilter(fromWarehouse, productId, variantId)),
 
-  for (const [type, warehouseId] of [
-    ["transfer_out", fromWarehouse],
-    ["transfer_in",  toWarehouse],
-  ] as const) {
-    await db.insert(inventoryMovements).values({
-      id: createId(), warehouseId, productId,
-      variantId: variantId ?? null, type,
-      qty, refType: "transfer", refId: transfer.id,
-      createdBy: c.get("userId" as any) ?? null,
-    });
-  }
+    // Gudang tujuan: baris yang tepat (per varian, bukan per produk)
+    destInv
+      ? db.update(inventory)
+          .set({ qtyOnHand: sql`qty_on_hand + ${qty}`, updatedAt: new Date() })
+          .where(eq(inventory.id, destInv.id))
+      : db.insert(inventory).values({
+          id: createId(), warehouseId: toWarehouse,
+          productId, variantId: variantId ?? null,
+          qtyOnHand: qty, qtyReserved: 0,
+        }),
 
-  await db.update(warehouseTransfers)
-    .set({ status: "completed", completedAt: new Date() })
-    .where(eq(warehouseTransfers.id, transfer.id));
+    db.insert(inventoryMovements).values({
+      id: createId(), warehouseId: fromWarehouse, productId,
+      variantId: variantId ?? null, type: "transfer_out",
+      qty, refType: "transfer", refId: transfer.id, createdBy: actorId,
+    }),
+    db.insert(inventoryMovements).values({
+      id: createId(), warehouseId: toWarehouse, productId,
+      variantId: variantId ?? null, type: "transfer_in",
+      qty, refType: "transfer", refId: transfer.id, createdBy: actorId,
+    }),
+
+    db.update(warehouseTransfers)
+      .set({ status: "completed", completedAt: new Date() })
+      .where(eq(warehouseTransfers.id, transfer.id)),
+  ]);
 
   return c.json({ success: true });
 });
@@ -364,22 +381,25 @@ warehouseRouter.patch("/transfer/:id/cancel", requireStaff, async (c) => {
   }
 
   const { fromWarehouse, productId, variantId, qty } = transfer;
+  const actorId = c.get("userId" as any) ?? null;
 
-  await db.update(inventory)
-    .set({ qtyReserved: sql`MAX(0, qty_reserved - ${qty})`, updatedAt: new Date() })
-    .where(inventoryRowFilter(fromWarehouse, productId, variantId));
-
-  await db.insert(inventoryMovements).values({
-    id: createId(), warehouseId: fromWarehouse, productId,
-    variantId: variantId ?? null, type: "release",
-    qty, refType: "transfer", refId: transfer.id,
-    createdBy: c.get("userId" as any) ?? null,
-    note: "Transfer dibatalkan",
-  });
-
-  await db.update(warehouseTransfers)
-    .set({ status: "cancelled" })
-    .where(eq(warehouseTransfers.id, transfer.id));
+  // Pelepasan reservasi dan penandaan batal harus menyatu — kalau statusnya
+  // gagal tertulis, transfer masih "pending" dan bisa dibatalkan lagi,
+  // melepaskan reservasi untuk kedua kalinya.
+  await db.batch([
+    db.update(inventory)
+      .set({ qtyReserved: sql`MAX(0, qty_reserved - ${qty})`, updatedAt: new Date() })
+      .where(inventoryRowFilter(fromWarehouse, productId, variantId)),
+    db.insert(inventoryMovements).values({
+      id: createId(), warehouseId: fromWarehouse, productId,
+      variantId: variantId ?? null, type: "release",
+      qty, refType: "transfer", refId: transfer.id, createdBy: actorId,
+      note: "Transfer dibatalkan",
+    }),
+    db.update(warehouseTransfers)
+      .set({ status: "cancelled" })
+      .where(eq(warehouseTransfers.id, transfer.id)),
+  ]);
 
   return c.json({ success: true });
 });
