@@ -3,6 +3,7 @@ import { json, redirect } from "@remix-run/cloudflare";
 import { Form, useActionData, useNavigation } from "@remix-run/react";
 
 import { apiPublic } from "~/lib/api";
+import { STORE_URL } from "~/lib/config";
 import { sessionCookie, PANEL_ROLES } from "~/lib/session";
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -79,6 +80,17 @@ export default function LoginPage() {
           >
             {nav.state === "submitting" ? "Masuk..." : "Masuk"}
           </button>
+
+          {/* Alur resetnya tinggal di storefront — tautan dari email juga ke
+              sana — jadi panel menautkan ke situ alih-alih menduplikasi
+              halamannya. Tanpa tautan ini, admin yang lupa password tidak punya
+              petunjuk apa pun bahwa pemulihan itu ada. */}
+          <a
+            href={`${STORE_URL}/auth/forgot`}
+            className="block text-center text-sm text-gray-400 hover:text-gray-600"
+          >
+            Lupa password?
+          </a>
         </Form>
       </div>
     </div>
