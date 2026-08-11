@@ -154,6 +154,20 @@ export const orderStatusUpdateSchema = z.object({
   note: z.string().max(500).nullable().optional(),
 });
 
+// ─── Admin: Pengiriman ────────────────────────────────────────────────────────
+// Endpoint shipment sebelumnya menerima body apa adanya tanpa satu pun cek:
+// warehouseId sembarang string, biaya bisa negatif, dan order-nya tidak
+// dipastikan ada. Salah ketik menghasilkan shipment yatim sekaligus menyetel
+// order jadi "shipped".
+export const shipmentInputSchema = z.object({
+  warehouseId: z.string().uuid(),
+  courier:     z.string().min(2).max(20),
+  service:     z.string().min(1).max(30),
+  etd:         z.string().max(30).nullable().optional(),
+  cost:        z.number().int().min(0),
+  trackingNo:  z.string().min(3).max(50).nullable().optional(),
+});
+
 // ─── Admin: Voucher ─────────────────────────────────────────────────────────────
 export const voucherInputSchema = z.object({
   code:        z.string().min(3).max(30).regex(/^[A-Za-z0-9_-]+$/, "Kode hanya boleh huruf, angka, _, -"),

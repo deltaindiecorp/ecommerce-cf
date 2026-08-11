@@ -2,12 +2,12 @@ import { Hono } from "hono";
 import type { Env } from "../types/env";
 import { requireStaff } from "../middleware/auth";
 import { createD1Client } from "@repo/db";
-import { orders, shipments, products, adminAuditLog } from "@repo/db/schema";
+import { orders, shipments, products, warehouses, adminAuditLog } from "@repo/db/schema";
 import { eq, desc, like, and, sql, count } from "drizzle-orm";
 import { createId } from "@repo/db";
 import {
   paginationSchema, isFulfilledStatus, orderStatusUpdateSchema,
-  canTransitionOrderStatus, allowedNextStatuses,
+  canTransitionOrderStatus, allowedNextStatuses, shipmentInputSchema,
 } from "@repo/shared";
 import { deductOrderStock, releaseOrderStock } from "../services/inventory";
 import { logAdminAction } from "../services/audit";
@@ -22,6 +22,8 @@ const ORDER_USER_COLUMNS = {
 } as const;
 
 const SALES_STATUSES = ["paid", "processing", "packed", "shipped", "delivered", "completed"];
+// Status yang masih masuk akal dibuatkan pengiriman.
+const SHIPPABLE_STATUSES = ["paid", "processing", "packed"];
 const DAY_LABELS = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"]; // getUTCDay(): 0=Minggu
 
 // WIB (UTC+7): geser dulu baru format sebagai UTC — trik umum untuk dapat
@@ -283,13 +285,32 @@ adminRouter.patch("/orders/:id/status", requireStaff, async (c) => {
 
 // ─── POST /api/admin/orders/:id/shipment ──────────────────────────────────────
 adminRouter.post("/orders/:id/shipment", requireStaff, async (c) => {
-  const { warehouseId, courier, service, etd, cost, trackingNo } =
-    await c.req.json<{
-      warehouseId: string; courier: string; service: string;
-      etd: string; cost: number; trackingNo?: string;
-    }>();
+  const parsed = shipmentInputSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 
-  const db = createD1Client(c.env.DB);
+  const { warehouseId, courier, service, etd, cost, trackingNo } = parsed.data;
+  const db      = createD1Client(c.env.DB);
+  const orderId = c.req.param("id");
+
+  // Keduanya dipastikan ada sebelum baris shipment dibuat — tanpa ini, id yang
+  // salah ketik menghasilkan shipment yang menunjuk entah ke mana, dan order
+  // terlanjur berpindah ke "shipped".
+  const [order, warehouse] = await Promise.all([
+    db.query.orders.findFirst({ where: eq(orders.id, orderId) }),
+    db.query.warehouses.findFirst({ where: eq(warehouses.id, warehouseId) }),
+  ]);
+  if (!order)     return c.json({ success: false, error: "Pesanan tidak ditemukan" }, 404);
+  if (!warehouse) return c.json({ success: false, error: "Gudang tidak ditemukan" }, 404);
+
+  // Pengiriman hanya masuk akal untuk order yang sudah dibayar dan belum
+  // selesai. Sebelumnya order batal pun bisa dibuatkan resi.
+  if (!SHIPPABLE_STATUSES.includes(order.status)) {
+    return c.json({
+      success: false,
+      error: `Pesanan berstatus "${order.status}" tidak bisa dibuatkan pengiriman.`,
+    }, 409);
+  }
+
   const shipmentId = createId();
 
   await db.insert(shipments).values({
@@ -303,10 +324,10 @@ adminRouter.post("/orders/:id/shipment", requireStaff, async (c) => {
   if (trackingNo) {
     await db.update(orders)
       .set({ status: "shipped", updatedAt: new Date() })
-      .where(eq(orders.id, c.req.param("id")));
+      .where(eq(orders.id, orderId));
 
     // Resi terisi = barang diserahkan ke kurir, stok fisik keluar gudang
-    await deductOrderStock(db, c.req.param("id"), c.get("userId" as any));
+    await deductOrderStock(db, orderId, c.get("userId" as any));
 
     // Enqueue resi polling
     await c.env.RESI_POLL_QUEUE.send({ type: "shipment_created", shipmentId, trackingNo, courier });
@@ -316,7 +337,7 @@ adminRouter.post("/orders/:id/shipment", requireStaff, async (c) => {
     actorId:    c.get("userId" as any),
     action:     "order.shipment_created",
     targetType: "order",
-    targetId:   c.req.param("id"),
+    targetId:   orderId,
     metadata:   { shipmentId, courier, service, trackingNo: trackingNo ?? null, cost },
   });
 

@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/cloudflare";
 import { json, redirect } from "@remix-run/cloudflare";
 import { useLoaderData, useActionData, Form, Link, useNavigation } from "@remix-run/react";
+import { useState } from "react";
 
 import { allowedNextStatuses } from "@repo/shared";
 
@@ -30,12 +31,17 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export async function loader({ params, request }: LoaderFunctionArgs) {
-  const [body, auditBody] = await Promise.all([
+  const [body, auditBody, whBody] = await Promise.all([
     apiFetch<any>(request, `/api/admin/orders/${params.id}`),
     apiFetch<any[]>(request, `/api/admin/audit?targetType=order&targetId=${params.id}&limit=20`),
+    apiFetch<any[]>(request, "/api/warehouse"),
   ]);
   if (!body.success) throw new Response("Pesanan tidak ditemukan", { status: 404 });
-  return json({ order: body.data, audit: auditBody.data ?? [] });
+  return json({
+    order:      body.data,
+    audit:      auditBody.data ?? [],
+    warehouses: (whBody.data ?? []).filter((w: any) => w.isActive),
+  });
 }
 
 export async function action({ params, request }: ActionFunctionArgs) {
@@ -85,13 +91,14 @@ export async function action({ params, request }: ActionFunctionArgs) {
 }
 
 export default function OrderDetailPage() {
-  const { order, audit } = useLoaderData<typeof loader>();
+  const { order, audit, warehouses } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const nav        = useNavigation();
   const isSubmitting = nav.state === "submitting";
   const addr       = order.shippingAddress ?? {};
   const nextStatuses = allowedNextStatuses(order.status);
   const isAdmin      = isAdminRole(useAdminRole());
+  const [refundConfirm, setRefundConfirm] = useState("");
 
   return (
     <div className="max-w-4xl">
@@ -219,12 +226,14 @@ export default function OrderDetailPage() {
               <h2 className="font-semibold text-gray-700 mb-3">Input Pengiriman</h2>
               <Form method="post" className="space-y-3">
                 <input type="hidden" name="intent" value="add_shipment" />
-                <input
-                  name="warehouseId"
-                  placeholder="Warehouse ID"
-                  required
-                  className="w-full border rounded-lg px-3 py-2 text-sm"
-                />
+                {/* Dulu input teks bebas berisi UUID yang harus dihafal admin.
+                    Daftar gudangnya memang sudah tersedia lewat /api/warehouse. */}
+                <select name="warehouseId" required className="w-full border rounded-lg px-3 py-2 text-sm">
+                  <option value="">Pilih gudang pengirim</option>
+                  {warehouses.map((w: any) => (
+                    <option key={w.id} value={w.id}>{w.name} · {w.city}</option>
+                  ))}
+                </select>
                 <div className="grid grid-cols-2 gap-2">
                   <input name="courier"  placeholder="Kurir (jne, jnt...)" required className="border rounded-lg px-3 py-2 text-sm" />
                   <input name="service"  placeholder="Layanan (REG, YES...)" required className="border rounded-lg px-3 py-2 text-sm" />
@@ -269,16 +278,28 @@ export default function OrderDetailPage() {
         {isAdmin && REFUNDABLE_STATUSES.includes(order.status) && (
             <div className="bg-white rounded-xl shadow-sm p-5 border border-red-100">
               <h2 className="font-semibold text-red-600 mb-3">Refund</h2>
-              <Form
-                method="post"
-                className="space-y-3"
-                onSubmit={(e) => {
-                  if (!confirm(`Yakin refund pesanan ${order.orderNo}? Aksi ini akan memproses refund ke gateway pembayaran.`)) {
-                    e.preventDefault();
-                  }
-                }}
-              >
+              {/* Sebelumnya penjaganya cuma confirm() — satu klik refleks sudah
+                  cukup untuk mengirim uang keluar. Sekarang nominalnya
+                  ditampilkan dan nomor pesanan harus diketik ulang, jadi
+                  tindakannya tidak bisa dilakukan tanpa membacanya dulu. */}
+              <p className="text-sm text-gray-700 mb-3">
+                Akan mengembalikan{" "}
+                <span className="font-bold">Rp {order.total?.toLocaleString("id-ID")}</span>{" "}
+                ke pembeli lewat gateway pembayaran. Tindakan ini tidak bisa dibatalkan.
+              </p>
+              <Form method="post" className="space-y-3">
                 <input type="hidden" name="intent" value="refund" />
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">
+                    Ketik <span className="font-mono text-gray-700">{order.orderNo}</span> untuk mengonfirmasi
+                  </label>
+                  <input
+                    value={refundConfirm}
+                    onChange={(e) => setRefundConfirm(e.target.value)}
+                    placeholder={order.orderNo}
+                    className="w-full border rounded-lg px-3 py-2 text-sm font-mono"
+                  />
+                </div>
                 <textarea
                   name="reason"
                   placeholder="Alasan refund (opsional)"
@@ -287,8 +308,8 @@ export default function OrderDetailPage() {
                 />
                 <button
                   type="submit"
-                  disabled={isSubmitting}
-                  className="w-full bg-red-600 text-white py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+                  disabled={isSubmitting || refundConfirm.trim() !== order.orderNo}
+                  className="w-full bg-red-600 text-white py-2 rounded-lg text-sm font-medium disabled:opacity-40"
                 >
                   {isSubmitting ? "Memproses..." : "Proses Refund"}
                 </button>
