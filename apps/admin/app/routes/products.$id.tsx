@@ -4,6 +4,7 @@ import { useLoaderData, useActionData, Form, Link, useNavigation } from "@remix-
 import { useState } from "react";
 
 import { apiFetch, apiPublic, formatApiError } from "~/lib/api";
+import { ImageManager } from "~/components/ImageManager";
 
 // ─── Pembacaan form ───────────────────────────────────────────────────────────
 // Field kosong dikirim sebagai null (bukan undefined) supaya benar-benar
@@ -296,16 +297,8 @@ export default function ProductEditPage() {
         <Section title="Media & Tag">
           <div className="space-y-4">
             <div>
-              <label className={LABEL}>URL Gambar — satu per baris</label>
-              <textarea
-                name="images" rows={3}
-                defaultValue={(product.images ?? []).join("\n")}
-                placeholder="https://..."
-                className={`${FIELD} font-mono text-xs`}
-              />
-              <p className="text-[11px] text-gray-400 mt-1">
-                Upload lewat <code>POST /api/upload/product-image</code>, lalu tempel URL-nya di sini.
-              </p>
+              <label className={LABEL}>Gambar Produk</label>
+              <ImageManager name="images" initial={product.images ?? []} />
             </div>
             <div>
               <label className={LABEL}>Tag — pisahkan dengan koma</label>
