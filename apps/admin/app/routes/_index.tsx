@@ -3,6 +3,8 @@ import { json } from "@remix-run/cloudflare";
 import { useLoaderData, Link } from "@remix-run/react";
 import type { AdminStatsOverview } from "@repo/shared";
 
+import { toCsv } from "@repo/shared";
+
 import { apiFetch } from "~/lib/api";
 
 export async function loader({ request }: LoaderFunctionArgs) {
@@ -76,7 +78,9 @@ function exportOrdersCsv(orders: any[]) {
     STATUS_LABEL[o.status] ?? o.status,
     o.total,
   ]);
-  const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+  // toCsv menetralkan sel yang diawali =, +, -, @ — nama pembeli berasal dari
+  // guest checkout yang tidak terautentikasi dan bisa berisi formula.
+  const csv = toCsv([header, ...rows]);
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement("a");
@@ -185,13 +189,18 @@ export default function DashboardPage() {
             <p className="text-xs text-gray-400">{total} pesanan total</p>
           </div>
           <div className="flex items-center gap-3">
+            {/* Tombol ini hanya mengekspor pesanan yang sudah dimuat di kartu
+                ini, bukan seluruh {total}. Labelnya menyebut jumlahnya supaya
+                tidak disangka ekspor penuh — letaknya persis di sebelah angka
+                total. */}
             <button
               type="button"
               onClick={() => exportOrdersCsv(recentOrders)}
               disabled={recentOrders.length === 0}
+              title="Mengekspor pesanan yang tampil di kartu ini saja"
               className="text-xs font-medium bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-2 rounded-lg disabled:opacity-40 transition-colors"
             >
-              ⬇️ Export CSV
+              ⬇️ Export {recentOrders.length} Terbaru
             </button>
             <Link to="/orders" className="text-blue-600 text-sm hover:underline">Lihat semua →</Link>
           </div>
