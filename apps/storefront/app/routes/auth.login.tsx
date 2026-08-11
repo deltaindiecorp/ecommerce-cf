@@ -3,6 +3,7 @@ import { json, redirect } from "@remix-run/cloudflare";
 import { Form, useActionData, useNavigation, Link } from "@remix-run/react";
 
 import { API_BASE } from "~/lib/config";
+import { authCookie } from "~/lib/session";
 
 export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
@@ -23,7 +24,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
   return redirect(redirectTo, {
     headers: {
-      "Set-Cookie": `auth_token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`,
+      "Set-Cookie": authCookie(token),
     },
   });
 }

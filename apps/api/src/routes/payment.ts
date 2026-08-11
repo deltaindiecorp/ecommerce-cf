@@ -247,10 +247,24 @@ paymentRouter.post("/:orderId/refund", requireAdmin, async (c) => {
 });
 
 // ─── GET /api/payment/:orderId/status ─────────────────────────────────────────
-paymentRouter.get("/:orderId/status", async (c) => {
+paymentRouter.get("/:orderId/status", optionalAuth, async (c) => {
+  const orderId = c.req.param("orderId");
   const db      = createD1Client(c.env.DB);
+
+  // Penjaga yang sama dengan /create: order milik pembeli terdaftar hanya bisa
+  // dilihat pemiliknya. Halaman pembayaran storefront memanggil ini tiap 5
+  // detik untuk guest, jadi order guest tetap terbuka dengan orderId sebagai
+  // penjaganya.
+  const order = await db.query.orders.findFirst({ where: eq(orders.id, orderId) });
+  if (!order) return c.json({ success: false, error: "Tidak ditemukan" }, 404);
+
+  const callerId = c.get("userId" as any) as string | undefined;
+  if (order.userId && order.userId !== callerId) {
+    return c.json({ success: false, error: "Tidak berwenang atas pesanan ini" }, 403);
+  }
+
   const payment = await db.query.payments.findFirst({
-    where: eq(payments.orderId, c.req.param("orderId")),
+    where: eq(payments.orderId, orderId),
   });
   if (!payment) return c.json({ success: false, error: "Tidak ditemukan" }, 404);
 
