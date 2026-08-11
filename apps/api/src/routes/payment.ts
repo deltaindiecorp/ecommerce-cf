@@ -5,6 +5,7 @@ import { orders, payments, inventory, inventoryMovements, shipments } from "@rep
 import { eq, and } from "drizzle-orm";
 import { createId } from "@repo/db";
 import { requireAdmin } from "../middleware/auth";
+import { logAdminAction } from "../services/audit";
 
 export const paymentRouter = new Hono<{ Bindings: Env }>();
 
@@ -175,6 +176,20 @@ paymentRouter.post("/:orderId/refund", requireAdmin, async (c) => {
     const { releaseOrderStock } = await import("../services/inventory");
     await releaseOrderStock(db, orderId);
   }
+
+  await logAdminAction(db, {
+    actorId:    c.get("userId" as any),
+    action:     "payment.refunded",
+    targetType: "order",
+    targetId:   orderId,
+    metadata:   {
+      orderNo:  order.orderNo,
+      amount:   order.total,
+      gateway:  payment.gateway,
+      fromStatus: order.status,
+      reason:   reason ?? null,
+    },
+  });
 
   await c.env.NOTIFICATION_QUEUE.send({ type: "order_refunded", orderId, paymentId: payment.id });
 

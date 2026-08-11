@@ -3,6 +3,7 @@ import { json, redirect } from "@remix-run/cloudflare";
 import { useLoaderData, useActionData, Form, Link, useNavigation, useSearchParams } from "@remix-run/react";
 
 import { apiFetch, formatApiError } from "~/lib/api";
+import { isAdminRole, useAdminRole } from "~/lib/session";
 
 function optText(fd: FormData, key: string): string | null {
   const v = String(fd.get(key) ?? "").trim();
@@ -270,6 +271,7 @@ export default function WarehousePage() {
   const whError       = actionData?.scope === "warehouse" ? actionData.error : null;
   const transferError = actionData?.scope === "transfer"  ? actionData.error : null;
   const adjustError   = actionData?.scope === "adjust"    ? actionData.error : null;
+  const isAdmin       = isAdminRole(useAdminRole());
 
   return (
     <div>
@@ -302,8 +304,10 @@ export default function WarehousePage() {
 
               <div className="flex items-center gap-3 mt-3 text-xs">
                 <Link to={`/warehouse?gudang=${wh.id}`} className="text-blue-600 hover:underline">Lihat stok</Link>
-                <Link to={`/warehouse?edit=${wh.id}`} className="text-gray-600 hover:underline">Edit</Link>
-                {wh.isActive && (
+                {isAdmin && (
+                  <Link to={`/warehouse?edit=${wh.id}`} className="text-gray-600 hover:underline">Edit</Link>
+                )}
+                {isAdmin && wh.isActive && (
                   <Form method="post" className="inline">
                     <input type="hidden" name="intent" value="deactivate_warehouse" />
                     <input type="hidden" name="warehouseId" value={wh.id} />
@@ -316,8 +320,8 @@ export default function WarehousePage() {
         )}
       </div>
 
-      {/* Edit gudang */}
-      {editing && (
+      {/* Edit gudang — hanya admin; API juga menolak staff */}
+      {isAdmin && editing && (
         <div className="bg-white rounded-xl shadow-sm p-6 mb-6 border border-blue-100">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold text-gray-700">Edit Gudang · {editing.name}</h2>
@@ -512,7 +516,7 @@ export default function WarehousePage() {
       )}
 
       {/* Tambah gudang */}
-      {!editing && (
+      {isAdmin && !editing && (
         <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
           <h2 className="font-semibold text-gray-700 mb-4">Tambah Gudang</h2>
 

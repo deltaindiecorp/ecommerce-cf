@@ -5,11 +5,18 @@ import { useLoaderData, useActionData, Form, Link, useNavigation } from "@remix-
 import { allowedNextStatuses } from "@repo/shared";
 
 import { apiFetch, formatApiError } from "~/lib/api";
+import { isAdminRole, useAdminRole } from "~/lib/session";
 
 // Daftar transisi dibaca dari @repo/shared, sumber yang sama dengan penjaga di
 // API — supaya dropdown tidak pernah menawarkan status yang pasti ditolak.
 // Sinkron dengan REFUNDABLE_STATUSES di apps/api/src/routes/payment.ts
 const REFUNDABLE_STATUSES = ["paid", "processing", "packed", "shipped", "delivered", "completed"];
+const AUDIT_LABEL: Record<string, string> = {
+  "order.status_changed":    "Status pesanan diubah",
+  "order.shipment_created":  "Pengiriman diinput",
+  "payment.refunded":        "Refund diproses",
+};
+
 const STATUS_LABEL: Record<string, string> = {
   pending_payment: "Menunggu Bayar",
   paid:            "Lunas",
@@ -23,9 +30,12 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export async function loader({ params, request }: LoaderFunctionArgs) {
-  const body = await apiFetch<any>(request, `/api/admin/orders/${params.id}`);
+  const [body, auditBody] = await Promise.all([
+    apiFetch<any>(request, `/api/admin/orders/${params.id}`),
+    apiFetch<any[]>(request, `/api/admin/audit?targetType=order&targetId=${params.id}&limit=20`),
+  ]);
   if (!body.success) throw new Response("Pesanan tidak ditemukan", { status: 404 });
-  return json({ order: body.data });
+  return json({ order: body.data, audit: auditBody.data ?? [] });
 }
 
 export async function action({ params, request }: ActionFunctionArgs) {
@@ -75,12 +85,13 @@ export async function action({ params, request }: ActionFunctionArgs) {
 }
 
 export default function OrderDetailPage() {
-  const { order }  = useLoaderData<typeof loader>();
+  const { order, audit } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const nav        = useNavigation();
   const isSubmitting = nav.state === "submitting";
   const addr       = order.shippingAddress ?? {};
   const nextStatuses = allowedNextStatuses(order.status);
+  const isAdmin      = isAdminRole(useAdminRole());
 
   return (
     <div className="max-w-4xl">
@@ -252,7 +263,10 @@ export default function OrderDetailPage() {
           )}
 
           {/* Refund */}
-          {REFUNDABLE_STATUSES.includes(order.status) && (
+          {/* Refund mengirim uang keluar dan tidak bisa dibatalkan — API menolak
+            staff, jadi panelnya pun tidak ditampilkan daripada memberi tombol
+            yang pasti gagal. */}
+        {isAdmin && REFUNDABLE_STATUSES.includes(order.status) && (
             <div className="bg-white rounded-xl shadow-sm p-5 border border-red-100">
               <h2 className="font-semibold text-red-600 mb-3">Refund</h2>
               <Form
@@ -283,6 +297,46 @@ export default function OrderDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Riwayat aksi admin untuk order ini */}
+      <section className="bg-white rounded-xl shadow-sm p-5 mt-6">
+        <h2 className="font-semibold text-gray-700">Riwayat Aksi Admin</h2>
+        <p className="text-xs text-gray-400 mt-0.5 mb-4">
+          Siapa mengubah apa pada pesanan ini, beserta waktunya.
+        </p>
+        {audit.length === 0 ? (
+          <p className="text-sm text-gray-400">Belum ada aksi admin yang tercatat.</p>
+        ) : (
+          <div className="divide-y divide-gray-50">
+            {audit.map((a: any) => (
+              <div key={a.id} className="flex items-start gap-3 py-2.5 text-sm">
+                <span className="text-xs text-gray-400 w-36 shrink-0 pt-0.5">
+                  {a.createdAt ? new Date(a.createdAt).toLocaleString("id-ID") : "—"}
+                </span>
+                <span className="flex-1">
+                  <span className="text-gray-800">{AUDIT_LABEL[a.action] ?? a.action}</span>
+                  {a.metadata?.from && a.metadata?.to && (
+                    <span className="text-gray-500">
+                      {" "}— {STATUS_LABEL[a.metadata.from] ?? a.metadata.from}
+                      {" → "}{STATUS_LABEL[a.metadata.to] ?? a.metadata.to}
+                    </span>
+                  )}
+                  {a.metadata?.reason && (
+                    <span className="text-gray-500"> — {String(a.metadata.reason)}</span>
+                  )}
+                  {a.metadata?.trackingNo && (
+                    <span className="text-gray-500 font-mono text-xs"> — {String(a.metadata.trackingNo)}</span>
+                  )}
+                </span>
+                <span className="text-xs text-gray-500 shrink-0">
+                  {a.actorName ?? <span className="text-gray-300">sistem</span>}
+                  {a.actorRole && <span className="text-gray-300"> · {a.actorRole}</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
