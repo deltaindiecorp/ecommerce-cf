@@ -4,16 +4,16 @@ import { useLoaderData, Link } from "@remix-run/react";
 import { useEffect } from "react";
 
 import { API_BASE } from "~/lib/config";
+import { apiFetch } from "~/lib/api";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const url     = new URL(request.url);
   const orderId = url.searchParams.get("orderId");
   if (!orderId) return redirect("/");
 
-  const res  = await fetch(`${API_BASE}/api/payment/${orderId}/status`);
-  const body = await res.json() as any;
-
-  const orderRes  = await fetch(`${API_BASE}/api/admin/orders/${orderId}`).catch(() => null);
+  // Panggilan ke /api/admin/orders sengaja dihapus: hasilnya tidak pernah
+  // dipakai, dan halaman publik tidak punya alasan menembak endpoint admin.
+  const body = await apiFetch<any>(request, `/api/payment/${orderId}/status`);
 
   return json({
     orderId,

@@ -5,16 +5,16 @@ import { useState, useEffect } from "react";
 import type { ShippingRate, ApiResponse, CityOption } from "@repo/shared";
 
 import { API_BASE } from "~/lib/config";
+import { apiFetch, formatApiError } from "~/lib/api";
 import { SiteHeader } from "~/components/SiteHeader";
 import { SiteFooter } from "~/components/SiteFooter";
 import { MobileBottomNav } from "~/components/MobileBottomNav";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const cartId = new URL(request.url).searchParams.get("cartId") ?? "";
-  const res    = await fetch(`${API_BASE}/api/cart`, {
+  const { data: cart } = await apiFetch<any>(request, "/api/cart", {
     headers: { "X-Cart-Id": cartId },
   });
-  const { data: cart } = await res.json() as any;
   if (!cart || cart.items.length === 0) return redirect("/");
 
   const totalWeight = cart.items.reduce((s: number, i: any) => s + i.weight * i.qty, 0);
@@ -47,13 +47,11 @@ export async function action({ request }: ActionFunctionArgs) {
     note:          formData.get("note"),
   };
 
-  const res = await fetch(`${API_BASE}/api/checkout`, {
+  const result = await apiFetch<any>(request, "/api/checkout", {
     method:  "POST",
-    headers: { "Content-Type": "application/json", "X-Cart-Id": cartId },
+    headers: { "X-Cart-Id": cartId },
     body:    JSON.stringify(payload),
   });
-
-  const result = await res.json() as any;
   if (!result.success) return json({ error: result.error }, { status: 400 });
 
   // Redirect ke halaman payment
@@ -336,8 +334,8 @@ export default function CheckoutPage() {
         <textarea name="note" placeholder="Catatan untuk penjual (opsional)" className="input w-full" rows={2} />
 
         {/* Error */}
-        {actionData?.error && (
-          <p className="text-red-500 text-sm">{JSON.stringify(actionData.error)}</p>
+        {Boolean(actionData?.error) && (
+          <p className="text-red-500 text-sm">{formatApiError(actionData?.error)}</p>
         )}
 
         {/* Summary */}

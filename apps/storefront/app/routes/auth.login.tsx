@@ -2,7 +2,7 @@ import type { ActionFunctionArgs } from "@remix-run/cloudflare";
 import { json, redirect } from "@remix-run/cloudflare";
 import { Form, useActionData, useNavigation, Link } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
+import { apiFetch, formatApiError } from "~/lib/api";
 import { authCookie } from "~/lib/session";
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -10,13 +10,10 @@ export async function action({ request }: ActionFunctionArgs) {
   const email    = formData.get("email") as string;
   const password = formData.get("password") as string;
 
-  const res  = await fetch(`${API_BASE}/api/auth/login`, {
-    method:  "POST",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ email, password }),
+  const result = await apiFetch<any>(request, "/api/auth/login", {
+    method: "POST",
+    body:   JSON.stringify({ email, password }),
   });
-
-  const result = await res.json() as any;
   if (!result.success) return json({ error: result.error }, { status: 400 });
 
   const token = result.data.token;
@@ -67,8 +64,8 @@ export default function LoginPage() {
             />
           </div>
 
-          {actionData?.error && (
-            <p className="text-red-500 text-sm">{actionData.error as string}</p>
+          {Boolean(actionData?.error) && (
+            <p className="text-red-500 text-sm">{formatApiError(actionData?.error)}</p>
           )}
 
           <button

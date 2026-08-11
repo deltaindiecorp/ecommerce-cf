@@ -2,7 +2,7 @@ import type { ActionFunctionArgs } from "@remix-run/cloudflare";
 import { json, redirect } from "@remix-run/cloudflare";
 import { Form, useActionData, useNavigation, Link } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
+import { apiFetch, formatApiError } from "~/lib/api";
 import { authCookie } from "~/lib/session";
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -17,16 +17,15 @@ export async function action({ request }: ActionFunctionArgs) {
     return json({ error: "Password dan konfirmasi tidak cocok" }, { status: 400 });
   }
 
-  const res  = await fetch(`${API_BASE}/api/auth/register`, {
-    method:  "POST",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ name, email, phone, password }),
+  const result = await apiFetch<any>(request, "/api/auth/register", {
+    method: "POST",
+    body:   JSON.stringify({ name, email, phone, password }),
   });
 
-  const result = await res.json() as any;
   if (!result.success) {
-    const msg = typeof result.error === "string" ? result.error : "Registrasi gagal, periksa kembali data Anda";
-    return json({ error: msg }, { status: 400 });
+    // Hasil zod .flatten() diterjemahkan jadi "field: pesan" alih-alih JSON
+    // mentah; pesan string dari API tetap dipakai apa adanya.
+    return json({ error: formatApiError(result.error) || "Registrasi gagal, periksa kembali data Anda" }, { status: 400 });
   }
 
   const token = result.data.token;

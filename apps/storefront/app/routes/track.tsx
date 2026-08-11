@@ -3,7 +3,7 @@ import { useLoaderData, useSearchParams, Form } from "@remix-run/react";
 import { json } from "@remix-run/cloudflare";
 import type { ApiResponse } from "@repo/shared";
 
-import { API_BASE } from "~/lib/config";
+import { apiFetch } from "~/lib/api";
 import { SiteHeader } from "~/components/SiteHeader";
 import { SiteFooter } from "~/components/SiteFooter";
 import { MobileBottomNav } from "~/components/MobileBottomNav";
@@ -15,15 +15,17 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   if (!orderId && !resiNo) return json({ tracking: null, resi: null });
 
-  const [trackingRes, resiRes] = await Promise.allSettled([
-    orderId ? fetch(`${API_BASE}/api/shipping/order/${orderId}/track`) : Promise.resolve(null),
-    resiNo  ? fetch(`${API_BASE}/api/shipping/resi/${resiNo}`) : Promise.resolve(null),
+  // Halaman pencarian: nomor yang tidak ketemu itu hasil yang wajar, bukan
+  // kegagalan. Keduanya ditangkap supaya satu pencarian nihil tidak
+  // menjatuhkan halaman lewat ErrorBoundary.
+  const [tracking, resi] = await Promise.all([
+    orderId
+      ? apiFetch<any>(request, `/api/shipping/order/${orderId}/track`).catch(() => null)
+      : Promise.resolve(null),
+    resiNo
+      ? apiFetch<any>(request, `/api/shipping/resi/${resiNo}`).catch(() => null)
+      : Promise.resolve(null),
   ]);
-
-  const tracking = trackingRes.status === "fulfilled" && trackingRes.value
-    ? (await trackingRes.value.json() as ApiResponse<any>) : null;
-  const resi = resiRes.status === "fulfilled" && resiRes.value
-    ? (await resiRes.value.json() as ApiResponse<any>) : null;
 
   return json({ tracking, resi });
 }
