@@ -348,7 +348,8 @@ export default function WarehousePage() {
             <h2 className="font-semibold text-gray-700">Inventaris · {selected.name}</h2>
             <Link to="/warehouse" className="text-xs text-gray-400 hover:text-gray-600">Tutup</Link>
           </div>
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[46rem]">
             <thead className="bg-gray-50">
               <tr>
                 <th className="text-left px-4 py-3 text-gray-600 font-semibold">Produk</th>
@@ -408,6 +409,7 @@ export default function WarehousePage() {
               )}
             </tbody>
           </table>
+        </div>
 
           <div className="border-t border-gray-100 p-5">
             <h3 className="text-sm font-medium text-gray-600 mb-1">Stok Masuk / Opname</h3>
@@ -468,7 +470,8 @@ export default function WarehousePage() {
               25 pergerakan terakhir. Menjawab kenapa stok berubah, kapan, dan oleh siapa.
             </p>
           </div>
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[46rem]">
             <thead className="bg-gray-50">
               <tr>
                 <th className="text-left px-4 py-3 text-gray-600 font-semibold">Waktu</th>
@@ -512,6 +515,7 @@ export default function WarehousePage() {
               )}
             </tbody>
           </table>
+        </div>
         </div>
       )}
 

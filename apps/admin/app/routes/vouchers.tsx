@@ -105,7 +105,8 @@ export default function VouchersPage() {
       </div>
 
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[46rem]">
           <thead className="bg-gray-50 border-b">
             <tr>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Kode</th>
@@ -146,6 +147,7 @@ export default function VouchersPage() {
             )}
           </tbody>
         </table>
+        </div>
       </div>
 
       <Pager page={meta.page} limit={meta.limit} total={meta.total} basePath="/vouchers" />

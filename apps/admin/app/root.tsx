@@ -4,6 +4,7 @@ import {
 } from "@remix-run/react";
 import type { LoaderFunctionArgs, LinksFunction } from "@remix-run/cloudflare";
 import { json, redirect } from "@remix-run/cloudflare";
+import { useEffect, useState } from "react";
 import stylesheet from "./tailwind.css?url";
 
 import { apiFetch, getToken } from "~/lib/api";
@@ -47,6 +48,13 @@ function getInitials(name?: string | null): string {
 export default function AdminRoot() {
   const location = useLocation();
   const data = useLoaderData<typeof loader>();
+  // Sidebar hanya bisa ditutup di layar kecil; di lg ke atas selalu terlihat
+  // sehingga state ini tidak berpengaruh.
+  const [navOpen, setNavOpen] = useState(false);
+
+  // Tutup otomatis setiap pindah halaman — kalau tidak, menu menutupi konten
+  // yang baru dibuka di HP.
+  useEffect(() => { setNavOpen(false); }, [location.pathname]);
 
   if (location.pathname === "/login") {
     return (
@@ -67,9 +75,36 @@ export default function AdminRoot() {
         <Meta />
         <Links />
       </head>
-      <body className="bg-gray-50 min-h-screen flex">
-        {/* Sidebar */}
-        <aside className="w-64 bg-white flex flex-col shrink-0 fixed h-full border-r border-gray-200 p-4 gap-4">
+      <body className="bg-gray-50 min-h-screen">
+        {/* Bilah atas — hanya di layar kecil, tempat tombol menu */}
+        <header className="lg:hidden fixed inset-x-0 top-0 z-30 h-14 bg-white border-b border-gray-200 flex items-center gap-3 px-4">
+          <button
+            type="button"
+            onClick={() => setNavOpen(v => !v)}
+            aria-label={navOpen ? "Tutup menu" : "Buka menu"}
+            aria-expanded={navOpen}
+            className="w-9 h-9 rounded-lg hover:bg-gray-100 flex items-center justify-center text-gray-700"
+          >
+            {navOpen ? "✕" : "☰"}
+          </button>
+          <span className="font-bold text-gray-800 text-sm">Admin</span>
+        </header>
+
+        {/* Latar gelap saat menu terbuka di layar kecil */}
+        {navOpen && (
+          <div
+            onClick={() => setNavOpen(false)}
+            className="lg:hidden fixed inset-0 z-30 bg-gray-900/40"
+            aria-hidden="true"
+          />
+        )}
+
+        {/* Sidebar — menggeser masuk di layar kecil, tetap di tempat mulai lg */}
+        <aside
+          className={`w-64 bg-white flex flex-col fixed inset-y-0 left-0 z-40 border-r border-gray-200 p-4 gap-4
+            transition-transform duration-200 lg:translate-x-0
+            ${navOpen ? "translate-x-0" : "-translate-x-full"}`}
+        >
           <div className="flex items-center gap-3 pb-3 border-b border-gray-200">
             <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-sm shrink-0">
               {getInitials(user?.name)}
@@ -111,8 +146,8 @@ export default function AdminRoot() {
           </div>
         </aside>
 
-        {/* Main */}
-        <main className="ml-64 flex-1 p-6 min-h-screen">
+        {/* Main — diberi ruang atas untuk bilah menu di layar kecil */}
+        <main className="lg:ml-64 p-4 pt-18 lg:p-6 min-h-screen">
           <Outlet />
         </main>
 
