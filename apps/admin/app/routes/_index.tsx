@@ -1,6 +1,7 @@
 import type { LoaderFunctionArgs } from "@remix-run/cloudflare";
 import { json } from "@remix-run/cloudflare";
-import { useLoaderData, Link } from "@remix-run/react";
+import { useLoaderData, Link, useRevalidator } from "@remix-run/react";
+import { useEffect, useRef } from "react";
 import type { AdminStatsOverview } from "@repo/shared";
 
 import { toCsv, ORDER_STATUS_LABEL, ORDER_STATUS_COLOR } from "@repo/shared";
@@ -68,8 +69,41 @@ function exportOrdersCsv(orders: any[]) {
   URL.revokeObjectURL(url);
 }
 
+// Dashboard dibiarkan terbuka berjam-jam di layar toko. Tanpa penyegaran, yang
+// tampil adalah angka saat halaman dibuka — berlabel jam yang juga ikut basi,
+// jadi tidak ada petunjuk bahwa datanya sudah usang.
+const REFRESH_MS = 60_000;
+
+function useAutoRevalidate(intervalMs: number) {
+  const revalidator = useRevalidator();
+  // Disimpan di ref supaya interval tidak dibuat ulang tiap render — identitas
+  // revalidator berubah setiap kali statusnya berganti.
+  const revalidate = useRef(revalidator.revalidate);
+  revalidate.current = revalidator.revalidate;
+
+  useEffect(() => {
+    const tick = () => {
+      // Tab tersembunyi tidak perlu ditarik datanya; percuma dan boros.
+      if (document.visibilityState === "visible") revalidate.current();
+    };
+
+    const id = setInterval(tick, intervalMs);
+    // Kembali ke tab setelah lama ditinggal adalah momen paling mungkin
+    // angkanya basi — segarkan segera, jangan tunggu tick berikutnya.
+    document.addEventListener("visibilitychange", tick);
+
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [intervalMs]);
+
+  return revalidator.state !== "idle";
+}
+
 export default function DashboardPage() {
   const { stats, recentOrders, total, lastUpdated } = useLoaderData<typeof loader>();
+  const refreshing = useAutoRevalidate(REFRESH_MS);
 
   const maxRevenue = Math.max(1, ...(stats?.weeklyRevenue.map(d => d.revenue) ?? [1]));
 
@@ -81,8 +115,12 @@ export default function DashboardPage() {
           <h1 className="text-2xl font-bold text-gray-800 mb-1">Overview</h1>
           <p className="text-sm text-gray-500">Ringkasan performa toko Anda hari ini.</p>
         </div>
-        <span className="text-xs font-medium text-gray-500 bg-white px-3 py-1.5 rounded-full border border-gray-200 w-max">
-          Update Terakhir: {lastUpdated} WIB
+        <span className="text-xs font-medium text-gray-500 bg-white px-3 py-1.5 rounded-full border border-gray-200 w-max flex items-center gap-2">
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${refreshing ? "bg-blue-500 animate-pulse" : "bg-green-500"}`}
+            aria-hidden="true"
+          />
+          {refreshing ? "Memperbarui..." : `Update Terakhir: ${lastUpdated} WIB`}
         </span>
       </header>
 
