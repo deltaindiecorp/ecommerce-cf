@@ -3,7 +3,7 @@ import { json } from "@remix-run/cloudflare";
 import { useLoaderData, Link } from "@remix-run/react";
 import type { AdminStatsOverview } from "@repo/shared";
 
-import { toCsv } from "@repo/shared";
+import { toCsv, ORDER_STATUS_LABEL, ORDER_STATUS_COLOR } from "@repo/shared";
 
 import { apiFetch } from "~/lib/api";
 
@@ -29,29 +29,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   });
 }
 
-const STATUS_COLOR: Record<string, string> = {
-  pending_payment: "bg-yellow-100 text-yellow-700",
-  paid:            "bg-green-100 text-green-700",
-  processing:      "bg-blue-100 text-blue-700",
-  packed:          "bg-purple-100 text-purple-700",
-  shipped:         "bg-indigo-100 text-indigo-700",
-  delivered:       "bg-teal-100 text-teal-700",
-  completed:       "bg-gray-100 text-gray-700",
-  cancelled:       "bg-red-100 text-red-700",
-  refunded:        "bg-orange-100 text-orange-700",
-};
 
-const STATUS_LABEL: Record<string, string> = {
-  pending_payment: "Menunggu Bayar",
-  paid:            "Lunas",
-  processing:      "Diproses",
-  packed:          "Dikemas",
-  shipped:         "Dikirim",
-  delivered:       "Diterima",
-  completed:       "Selesai",
-  cancelled:       "Batal",
-  refunded:        "Refund",
-};
 
 function initials(name?: string | null): string {
   if (!name) return "??";
@@ -75,7 +53,7 @@ function exportOrdersCsv(orders: any[]) {
     o.orderNo,
     o.guestName ?? o.user?.name ?? "Customer",
     o.createdAt ? new Date(o.createdAt).toLocaleString("id-ID") : "",
-    STATUS_LABEL[o.status] ?? o.status,
+    ORDER_STATUS_LABEL[o.status] ?? o.status,
     o.total,
   ]);
   // toCsv menetralkan sel yang diawali =, +, -, @ — nama pembeli berasal dari
@@ -223,8 +201,8 @@ export default function DashboardPage() {
                   <p className="text-sm font-semibold text-gray-800 shrink-0">
                     Rp {order.total?.toLocaleString("id-ID")}
                   </p>
-                  <span className={`shrink-0 px-2.5 py-1 rounded-full text-xs font-medium ${STATUS_COLOR[order.status] ?? "bg-gray-100 text-gray-600"}`}>
-                    {STATUS_LABEL[order.status] ?? order.status}
+                  <span className={`shrink-0 px-2.5 py-1 rounded-full text-xs font-medium ${ORDER_STATUS_COLOR[order.status] ?? "bg-gray-100 text-gray-600"}`}>
+                    {ORDER_STATUS_LABEL[order.status] ?? order.status}
                   </span>
                 </Link>
               );

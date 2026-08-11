@@ -3,7 +3,7 @@ import { json, redirect } from "@remix-run/cloudflare";
 import { useLoaderData, useActionData, Form, Link, useNavigation } from "@remix-run/react";
 import { useState } from "react";
 
-import { allowedNextStatuses } from "@repo/shared";
+import { allowedNextStatuses, ORDER_STATUS_LABEL } from "@repo/shared";
 
 import { apiFetch, formatApiError } from "~/lib/api";
 import { isAdminRole, useAdminRole } from "~/lib/session";
@@ -18,17 +18,6 @@ const AUDIT_LABEL: Record<string, string> = {
   "payment.refunded":        "Refund diproses",
 };
 
-const STATUS_LABEL: Record<string, string> = {
-  pending_payment: "Menunggu Bayar",
-  paid:            "Lunas",
-  processing:      "Sedang Diproses",
-  packed:          "Dikemas",
-  shipped:         "Dikirim",
-  delivered:       "Telah Diterima",
-  completed:       "Selesai",
-  cancelled:       "Dibatalkan",
-  refunded:        "Refund",
-};
 
 export async function loader({ params, request }: LoaderFunctionArgs) {
   const [body, auditBody, whBody] = await Promise.all([
@@ -106,7 +95,7 @@ export default function OrderDetailPage() {
         <Link to="/orders" className="text-gray-400 hover:text-gray-600 text-sm">← Kembali</Link>
         <h1 className="text-xl font-bold text-gray-800">Pesanan: {order.orderNo}</h1>
         <span className={`ml-auto px-3 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700`}>
-          {STATUS_LABEL[order.status] ?? order.status}
+          {ORDER_STATUS_LABEL[order.status] ?? order.status}
         </span>
       </div>
 
@@ -176,7 +165,7 @@ export default function OrderDetailPage() {
               <input type="hidden" name="intent" value="update_status" />
               {nextStatuses.length === 0 ? (
                 <p className="text-sm text-gray-500 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
-                  Status &ldquo;{STATUS_LABEL[order.status] ?? order.status}&rdquo; sudah final
+                  Status &ldquo;{ORDER_STATUS_LABEL[order.status] ?? order.status}&rdquo; sudah final
                   dan tidak bisa diubah lagi.
                 </p>
               ) : (
@@ -186,7 +175,7 @@ export default function OrderDetailPage() {
                   className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   {nextStatuses.map(s => (
-                    <option key={s} value={s}>{STATUS_LABEL[s] ?? s}</option>
+                    <option key={s} value={s}>{ORDER_STATUS_LABEL[s] ?? s}</option>
                   ))}
                 </select>
               )}
@@ -338,8 +327,8 @@ export default function OrderDetailPage() {
                   <span className="text-gray-800">{AUDIT_LABEL[a.action] ?? a.action}</span>
                   {a.metadata?.from && a.metadata?.to && (
                     <span className="text-gray-500">
-                      {" "}— {STATUS_LABEL[a.metadata.from] ?? a.metadata.from}
-                      {" → "}{STATUS_LABEL[a.metadata.to] ?? a.metadata.to}
+                      {" "}— {ORDER_STATUS_LABEL[a.metadata.from] ?? a.metadata.from}
+                      {" → "}{ORDER_STATUS_LABEL[a.metadata.to] ?? a.metadata.to}
                     </span>
                   )}
                   {a.metadata?.reason && (

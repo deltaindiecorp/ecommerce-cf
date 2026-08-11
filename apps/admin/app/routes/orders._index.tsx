@@ -2,30 +2,10 @@ import type { LoaderFunctionArgs } from "@remix-run/cloudflare";
 import { json } from "@remix-run/cloudflare";
 import { useLoaderData, Link, Form, useSearchParams } from "@remix-run/react";
 
+import { ORDER_STATUS_LABEL, ORDER_STATUS_COLOR, ORDER_STATUS_FILTERS } from "@repo/shared";
+
 import { apiFetch } from "~/lib/api";
 
-const STATUS_LABEL: Record<string, string> = {
-  pending_payment: "Menunggu Bayar",
-  paid:            "Lunas",
-  processing:      "Diproses",
-  packed:          "Dikemas",
-  shipped:         "Dikirim",
-  delivered:       "Diterima",
-  completed:       "Selesai",
-  cancelled:       "Batal",
-  refunded:        "Refund",
-};
-const STATUS_COLOR: Record<string, string> = {
-  pending_payment: "bg-yellow-100 text-yellow-700",
-  paid:            "bg-green-100 text-green-700",
-  processing:      "bg-blue-100 text-blue-700",
-  packed:          "bg-purple-100 text-purple-700",
-  shipped:         "bg-indigo-100 text-indigo-700",
-  delivered:       "bg-teal-100 text-teal-700",
-  completed:       "bg-gray-100 text-gray-700",
-  cancelled:       "bg-red-100 text-red-700",
-  refunded:        "bg-orange-100 text-orange-700",
-};
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const url    = new URL(request.url);
@@ -59,7 +39,7 @@ export default function OrderListPage() {
 
       {/* Filter */}
       <div className="flex gap-2 mb-4 flex-wrap">
-        {["", "pending_payment", "paid", "processing", "packed", "shipped", "delivered", "completed", "cancelled"].map(s => (
+        {ORDER_STATUS_FILTERS.map(s => (
           <Link
             key={s}
             to={`/orders${s ? `?status=${s}` : ""}`}
@@ -67,7 +47,7 @@ export default function OrderListPage() {
               status === s ? "bg-blue-600 text-white border-blue-600" : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"
             }`}
           >
-            {s ? STATUS_LABEL[s] : "Semua"}
+            {s ? ORDER_STATUS_LABEL[s] : "Semua"}
           </Link>
         ))}
       </div>
@@ -103,8 +83,8 @@ export default function OrderListPage() {
                     {order.createdAt ? new Date(order.createdAt).toLocaleDateString("id-ID") : "—"}
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLOR[order.status] ?? "bg-gray-100 text-gray-600"}`}>
-                      {STATUS_LABEL[order.status] ?? order.status}
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${ORDER_STATUS_COLOR[order.status] ?? "bg-gray-100 text-gray-600"}`}>
+                      {ORDER_STATUS_LABEL[order.status] ?? order.status}
                     </span>
                   </td>
                   <td className="px-4 py-3">
