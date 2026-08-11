@@ -8,6 +8,7 @@ import { createId } from "@repo/db";
 import {
   paginationSchema, isFulfilledStatus, orderStatusUpdateSchema,
   canTransitionOrderStatus, allowedNextStatuses, shipmentInputSchema,
+  wibDateKey, SQLITE_WIB_MODIFIER,
 } from "@repo/shared";
 import { deductOrderStock, releaseOrderStock } from "../services/inventory";
 import { logAdminAction } from "../services/audit";
@@ -26,13 +27,6 @@ const SALES_STATUSES = ["paid", "processing", "packed", "shipped", "delivered", 
 const SHIPPABLE_STATUSES = ["paid", "processing", "packed"];
 const DAY_LABELS = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"]; // getUTCDay(): 0=Minggu
 
-// WIB (UTC+7): geser dulu baru format sebagai UTC — trik umum untuk dapat
-// "tanggal kalender lokal" tanpa library timezone.
-function wibDateKey(offsetDays: number): string {
-  const ms = Date.now() + 7 * 60 * 60 * 1000 - offsetDays * 24 * 60 * 60 * 1000;
-  return new Date(ms).toISOString().slice(0, 10);
-}
-
 function pctChange(today: number, yesterday: number): number {
   if (yesterday === 0) return today > 0 ? 100 : 0;
   return Math.round(((today - yesterday) / yesterday) * 1000) / 10;
@@ -47,20 +41,44 @@ adminRouter.get("/stats/overview", requireStaff, async (c) => {
 
   const ordersResult = await c.env.DB.prepare(`
     SELECT
-      date(created_at, 'unixepoch', '+7 hours') as day,
-      SUM(CASE WHEN status IN (${SALES_STATUSES.map(() => "?").join(",")}) THEN total ELSE 0 END) as revenue,
+      date(created_at, 'unixepoch', ?) as day,
+      -- subtotal - discount = nilai barang setelah diskon. orders.total ikut
+      -- memuat ongkir, yang uang titipan kurir dan bukan pendapatan toko;
+      -- memakainya melebih-lebihkan omzet sebesar seluruh ongkir yang tertagih.
+      SUM(CASE WHEN status IN (${SALES_STATUSES.map(() => "?").join(",")}) THEN subtotal - discount ELSE 0 END) as revenue,
       COUNT(*) as orderCount
     FROM orders
     WHERE created_at >= ?
     GROUP BY day
-  `).bind(...SALES_STATUSES, boundaryEpoch).all<{ day: string; revenue: number; orderCount: number }>();
+  `).bind(SQLITE_WIB_MODIFIER, ...SALES_STATUSES, boundaryEpoch)
+    .all<{ day: string; revenue: number; orderCount: number }>();
 
+  // "Pelanggan baru" sebelumnya menghitung baris di tabel users, padahal guest
+  // checkout tidak pernah membuat baris user sama sekali. Di toko yang mayoritas
+  // transaksinya guest, kartunya menunjukkan nol sementara pesanan terus masuk.
+  //
+  // Sekarang dihitung dari pembeli: siapa pun yang memesan dalam jendela ini dan
+  // TIDAK pernah memesan sebelumnya. Pembeli terdaftar dikenali lewat user_id,
+  // guest lewat guest_email — dipisah (bukan COALESCE) supaya NOT EXISTS-nya
+  // masih bisa memakai index.
   const customersResult = await c.env.DB.prepare(`
-    SELECT date(created_at, 'unixepoch', '+7 hours') as day, COUNT(*) as count
-    FROM users
-    WHERE role = 'customer' AND is_guest = 0 AND created_at >= ?
+    WITH recent AS (
+      SELECT user_id AS uid, guest_email AS gmail, MIN(created_at) AS first_seen
+      FROM orders
+      WHERE created_at >= ? AND (user_id IS NOT NULL OR guest_email IS NOT NULL)
+      GROUP BY user_id, guest_email
+    )
+    SELECT date(first_seen, 'unixepoch', ?) as day, COUNT(*) as count
+    FROM recent r
+    WHERE NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.created_at < ?
+        AND ((r.uid IS NOT NULL AND o.user_id = r.uid)
+          OR (r.gmail IS NOT NULL AND o.guest_email = r.gmail))
+    )
     GROUP BY day
-  `).bind(boundaryEpoch).all<{ day: string; count: number }>();
+  `).bind(boundaryEpoch, SQLITE_WIB_MODIFIER, boundaryEpoch)
+    .all<{ day: string; count: number }>();
 
   // Laba kotor dihitung di level item, bukan dari orders.total — total order
   // termasuk ongkir, yang uang titipan kurir dan bukan pendapatan toko.
@@ -71,7 +89,7 @@ adminRouter.get("/stats/overview", requireStaff, async (c) => {
   // terpisah sebagai cakupan, supaya angkanya jujur soal seberapa lengkap.
   const profitResult = await c.env.DB.prepare(`
     SELECT
-      date(o.created_at, 'unixepoch', '+7 hours') as day,
+      date(o.created_at, 'unixepoch', ?) as day,
       SUM(CASE WHEN oi.cost_snapshot IS NOT NULL
                THEN (oi.price_snapshot - oi.cost_snapshot) * oi.qty ELSE 0 END) as grossProfit,
       SUM(CASE WHEN oi.cost_snapshot IS NOT NULL THEN oi.qty ELSE 0 END) as qtyWithCost,
@@ -81,7 +99,7 @@ adminRouter.get("/stats/overview", requireStaff, async (c) => {
     WHERE o.created_at >= ?
       AND o.status IN (${SALES_STATUSES.map(() => "?").join(",")})
     GROUP BY day
-  `).bind(boundaryEpoch, ...SALES_STATUSES)
+  `).bind(SQLITE_WIB_MODIFIER, boundaryEpoch, ...SALES_STATUSES)
     .all<{ day: string; grossProfit: number; qtyWithCost: number; qtyTotal: number }>();
 
   const ordersByDay    = new Map(ordersResult.results.map(r => [r.day, r]));

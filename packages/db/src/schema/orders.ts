@@ -52,9 +52,14 @@ export const orders = sqliteTable("orders", {
   // Daftar pesanan yang difilter status lalu diurutkan tanggal. Prefix (status)
   // juga melayani filter status polos, jadi tidak perlu index terpisah.
   statusCreatedAtIdx: index("orders_status_created_at_idx").on(t.status, t.createdAt),
-  // Catatan: user_id sengaja TIDAK di-index — sampai saat ini tidak ada satu
-  // query pun yang mencari order berdasarkan user. Tambahkan begitu fitur
-  // "pesanan saya" dibuat.
+  // Kartu "Pelanggan Baru" mencari pembeli yang belum pernah memesan sebelumnya
+  // lewat NOT EXISTS pada kedua kolom ini. Tanpa index, tiap pemuatan dashboard
+  // memindai seluruh riwayat pesanan sekali untuk tiap pembeli dalam jendela.
+  //
+  // Keduanya sebelumnya sengaja tidak di-index karena memang belum ada query
+  // yang memakainya — alasannya yang berubah, bukan keputusannya yang keliru.
+  userIdIdx:     index("orders_user_id_idx").on(t.userId),
+  guestEmailIdx: index("orders_guest_email_idx").on(t.guestEmail),
 }));
 
 // ─── Order Items ──────────────────────────────────────────────────────────────

@@ -39,18 +39,62 @@ export const KV_TTL = {
   cities:       60 * 60 * 24,      // 24 jam — daftar kota RajaOngkir jarang berubah
 } as const;
 
+// ─── Zona Waktu Toko ──────────────────────────────────────────────────────────
+// Satu-satunya definisi "hari" untuk seluruh laporan. Sebelumnya ada dua
+// implementasi terpisah — SQL memakai date(..., '+7 hours') sementara JS punya
+// wibDateKey() sendiri. Keduanya kebetulan sepakat, tapi mengubah salah satunya
+// akan membuat "hari ini" di kartu statistik berbeda dari "hari ini" di grafik,
+// tanpa satu pun test yang gagal.
+export const WIB_OFFSET_HOURS = 7;
+
+// Modifier untuk fungsi date()/datetime() SQLite, dibangun dari konstanta yang
+// sama supaya SQL dan JS tidak bisa lagi menyimpang.
+export const SQLITE_WIB_MODIFIER = `+${WIB_OFFSET_HOURS} hours`;
+
+// Tanggal kalender WIB dalam format YYYY-MM-DD. Digeser dulu lalu diformat
+// sebagai UTC — trik umum untuk mendapat tanggal lokal tanpa library timezone.
+export function wibDateKey(offsetDays = 0, now: number = Date.now()): string {
+  const ms = now + WIB_OFFSET_HOURS * 3600_000 - offsetDays * 86_400_000;
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
 // ─── Order Status Labels ──────────────────────────────────────────────────────
+// Satu sumber untuk seluruh panel. Sebelumnya terduplikasi di empat berkas
+// route dengan teks yang sudah mulai berbeda ("Diproses" vs "Sedang Diproses"),
+// sementara konstanta ini justru tidak dipakai siapa pun.
+//
+// Dipilih bentuk ringkas karena mayoritas pemakaiannya adalah badge di tabel.
 export const ORDER_STATUS_LABEL: Record<string, string> = {
-  pending_payment: "Menunggu Pembayaran",
-  paid:            "Pembayaran Diterima",
-  processing:      "Sedang Diproses",
+  pending_payment: "Menunggu Bayar",
+  paid:            "Lunas",
+  processing:      "Diproses",
   packed:          "Dikemas",
-  shipped:         "Dalam Pengiriman",
-  delivered:       "Telah Diterima",
+  shipped:         "Dikirim",
+  delivered:       "Diterima",
   completed:       "Selesai",
-  cancelled:       "Dibatalkan",
-  refunded:        "Dikembalikan",
+  cancelled:       "Batal",
+  refunded:        "Refund",
 };
+
+export const ORDER_STATUS_COLOR: Record<string, string> = {
+  pending_payment: "bg-yellow-100 text-yellow-700",
+  paid:            "bg-green-100 text-green-700",
+  processing:      "bg-blue-100 text-blue-700",
+  packed:          "bg-purple-100 text-purple-700",
+  shipped:         "bg-indigo-100 text-indigo-700",
+  delivered:       "bg-teal-100 text-teal-700",
+  completed:       "bg-gray-100 text-gray-700",
+  cancelled:       "bg-red-100 text-red-700",
+  refunded:        "bg-orange-100 text-orange-700",
+};
+
+// Urutan untuk chip filter di daftar pesanan. "" = semua.
+// `refunded` sempat hilang dari daftar ini, sehingga pesanan yang sudah
+// di-refund hanya bisa ditemukan lewat "Semua".
+export const ORDER_STATUS_FILTERS = [
+  "", "pending_payment", "paid", "processing", "packed",
+  "shipped", "delivered", "completed", "cancelled", "refunded",
+] as const;
 
 // ─── Order Fulfillment ────────────────────────────────────────────────────────
 // Status yang berarti barang sudah keluar fisik dari gudang. Begitu order masuk
