@@ -22,12 +22,14 @@ export type AuditAction =
   | "warehouse.deactivated"
   | "voucher.created"
   | "voucher.deactivated"
-  | "settings.updated";
+  | "settings.updated"
+  | "user.created"
+  | "user.updated";
 
 export type AuditEntry = {
   actorId?:   string | null;
   action:     AuditAction;
-  targetType: "order" | "product" | "warehouse" | "voucher" | "payment" | "settings";
+  targetType: "order" | "product" | "warehouse" | "voucher" | "payment" | "settings" | "user";
   targetId?:  string | null;
   metadata?:  Record<string, unknown> | null;
 };

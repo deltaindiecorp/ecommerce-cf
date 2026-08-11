@@ -158,6 +158,34 @@ export const orderStatusUpdateSchema = z.object({
   note: z.string().max(500).nullable().optional(),
 });
 
+// ─── Admin: Kelola User ───────────────────────────────────────────────────────
+export const adminUserCreateSchema = z.object({
+  name:     z.string().min(2).max(80),
+  email:    z.string().email(),
+  phone:    z.string().regex(/^(\+62|62|0)[0-9]{8,12}$/, "Format no HP tidak valid"),
+  password: z.string().min(8, "Password minimal 8 karakter"),
+  role:     z.enum(["admin", "staff", "customer"]),
+});
+
+// Password TIDAK bisa diubah lewat sini. Admin yang bisa menyetel password
+// orang lain berarti bisa memakai akun itu tanpa jejak; pemulihan akses
+// ditangani alur reset lewat email, yang buktinya ada di kotak masuk pemilik.
+export const adminUserUpdateSchema = z.object({
+  name:  z.string().min(2).max(80).optional(),
+  phone: z.string().regex(/^(\+62|62|0)[0-9]{8,12}$/, "Format no HP tidak valid").optional(),
+  role:  z.enum(["admin", "staff", "customer"]).optional(),
+});
+
+// ─── Reset Password ───────────────────────────────────────────────────────────
+export const forgotPasswordSchema = z.object({
+  email: z.string().email(),
+});
+
+export const resetPasswordSchema = z.object({
+  token:    z.string().min(20),
+  password: z.string().min(8, "Password minimal 8 karakter"),
+});
+
 // ─── Admin: Pengaturan Toko ───────────────────────────────────────────────────
 // Semua opsional: pengaturan diperbarui sebagian, dan field yang dikosongkan
 // harus benar-benar jadi NULL (bukan dilewati drizzle) — karena itu .nullable().

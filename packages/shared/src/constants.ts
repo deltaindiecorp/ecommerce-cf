@@ -26,6 +26,8 @@ export const KV_KEYS = {
   // Daftar cabut token. Kunci per jti, TTL disamakan dengan sisa umur token
   // supaya entrinya hilang sendiri saat tokennya memang sudah kedaluwarsa.
   revokedToken: (jti: string) => `revoked:${jti}`,
+  // Token reset password. Sekali pakai — dihapus begitu ditukar.
+  passwordReset: (token: string) => `pwreset:${token}`,
 } as const;
 
 // ─── KV TTLs (seconds) ────────────────────────────────────────────────────────
@@ -37,6 +39,7 @@ export const KV_TTL = {
   product:      60 * 5,            // 5 menit
   otp:          60 * 10,           // 10 menit
   cities:       60 * 60 * 24,      // 24 jam — daftar kota RajaOngkir jarang berubah
+  passwordReset: 60 * 30,          // 30 menit — cukup untuk buka email, cukup pendek kalau bocor
 } as const;
 
 // ─── Zona Waktu Toko ──────────────────────────────────────────────────────────
