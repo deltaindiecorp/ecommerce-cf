@@ -33,6 +33,11 @@ export const orders = sqliteTable("orders", {
   discount:     integer("discount").notNull().default(0),
   total:        integer("total").notNull(),
 
+  // Metode pembayaran yang dipilih pembeli saat checkout. Sebelumnya tidak
+  // pernah disimpan sama sekali — pilihan COD hilang begitu checkout selesai,
+  // dan tidak ada cara membedakan order COD dari order gateway.
+  paymentMethod: text("payment_method", { enum: ["midtrans", "xendit", "cod"] }),
+
   // Voucher
   voucherCode:  text("voucher_code"),
   voucherDiscount: integer("voucher_discount").default(0),

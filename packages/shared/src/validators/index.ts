@@ -158,6 +158,16 @@ export const orderStatusUpdateSchema = z.object({
   note: z.string().max(500).nullable().optional(),
 });
 
+// ─── Pembayaran ───────────────────────────────────────────────────────────────
+// `gateway` sengaja TIDAK diterima dari klien. Gateway ditentukan dari
+// paymentMethod yang dipilih pembeli saat checkout dan tersimpan di order —
+// kalau diambil dari request ini, pembeli bisa memilih COD lalu meminta
+// invoice gateway, atau sebaliknya.
+export const paymentCreateSchema = z.object({
+  orderId: z.string().uuid(),
+  method:  z.string().min(2).max(30).nullable().optional(), // va_bca, qris, gopay, ...
+});
+
 // ─── Admin: Pengiriman ────────────────────────────────────────────────────────
 // Endpoint shipment sebelumnya menerima body apa adanya tanpa satu pun cek:
 // warehouseId sembarang string, biaya bisa negatif, dan order-nya tidak

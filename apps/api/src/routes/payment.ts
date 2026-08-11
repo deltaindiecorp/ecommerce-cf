@@ -4,15 +4,18 @@ import { createD1Client } from "@repo/db";
 import { orders, payments, inventory, inventoryMovements, shipments } from "@repo/db/schema";
 import { eq, and } from "drizzle-orm";
 import { createId } from "@repo/db";
-import { requireAdmin } from "../middleware/auth";
+import { requireAdmin, optionalAuth } from "../middleware/auth";
+import { paymentCreateSchema } from "@repo/shared";
 import { logAdminAction } from "../services/audit";
 
 export const paymentRouter = new Hono<{ Bindings: Env }>();
 
 // ─── POST /api/payment/create ─────────────────────────────────────────────────
-paymentRouter.post("/create", async (c) => {
-  const { orderId, gateway = "midtrans", method } =
-    await c.req.json<{ orderId: string; gateway?: "midtrans" | "xendit"; method?: string }>();
+paymentRouter.post("/create", optionalAuth, async (c) => {
+  const parsed = paymentCreateSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
+
+  const { orderId, method } = parsed.data;
 
   const db    = createD1Client(c.env.DB);
   const order = await db.query.orders.findFirst({
@@ -21,20 +24,67 @@ paymentRouter.post("/create", async (c) => {
   });
 
   if (!order) return c.json({ success: false, error: "Order tidak ditemukan" }, 404);
+
+  // Order milik pembeli terdaftar hanya boleh diproses oleh pemiliknya.
+  // Order guest tidak punya pemilik yang bisa dicek — pengetahuan atas orderId
+  // (UUID v4) yang jadi penjaganya, sama seperti tautan pelacakan pesanan.
+  const callerId = c.get("userId" as any) as string | undefined;
+  if (order.userId && order.userId !== callerId) {
+    return c.json({ success: false, error: "Tidak berwenang atas pesanan ini" }, 403);
+  }
+
   if (order.status !== "pending_payment") {
     return c.json({ success: false, error: "Order sudah dibayar atau dibatalkan" }, 400);
   }
 
-  const paymentId = createId();
-  let result: Record<string, unknown> = {};
-
-  if (gateway === "midtrans") {
-    result = await createMidtransTransaction(c.env, order, paymentId);
-  } else {
-    result = await createXenditInvoice(c.env, order, paymentId);
+  // Gateway mengikuti pilihan pembeli saat checkout, bukan nilai dari request
+  // ini. Sebelumnya `gateway` diambil dari body tanpa divalidasi, dan nilai
+  // "cod" jatuh ke cabang else — yaitu Xendit. Pembeli memilih bayar di tempat,
+  // sistem malah mencoba menagih lewat gateway.
+  const gateway = order.paymentMethod ?? "midtrans";
+  const existing = await db.query.payments.findFirst({
+    where: and(eq(payments.orderId, order.id), eq(payments.status, "pending")),
+  });
+  if (existing) {
+    return c.json({ success: false, error: "Pembayaran untuk pesanan ini sudah dibuat" }, 409);
   }
 
-  // Simpan payment record
+  const paymentId = createId();
+
+  // COD tidak melibatkan gateway sama sekali: catat saja tagihannya, penagihan
+  // terjadi saat barang diserahkan.
+  if (gateway === "cod") {
+    await db.insert(payments).values({
+      id:      paymentId,
+      orderId: order.id,
+      gateway: "cod",
+      method:  "cod",
+      amount:  order.total,
+      status:  "pending",
+    });
+
+    return c.json({
+      success: true,
+      data: { paymentId, gateway: "cod", instruction: "Bayar tunai saat barang diterima" },
+    }, 201);
+  }
+
+  let result: Record<string, unknown>;
+  try {
+    result = gateway === "midtrans"
+      ? await createMidtransTransaction(c.env, order, paymentId)
+      : await createXenditInvoice(c.env, order, paymentId);
+  } catch (err) {
+    // Baris payment TIDAK dibuat kalau gateway menolak. Versi lama tetap
+    // membuatnya dan membalas success, sehingga pembeli mengira sudah ada
+    // tagihan padahal tidak ada invoice yang benar-benar terbit.
+    console.error("[payment] gagal membuat transaksi gateway:", gateway, orderId, err);
+    return c.json({
+      success: false,
+      error: "Gagal membuat transaksi pembayaran. Coba lagi beberapa saat lagi.",
+    }, 502);
+  }
+
   await db.insert(payments).values({
     id:           paymentId,
     orderId:      order.id,
@@ -235,6 +285,13 @@ async function createMidtransTransaction(env: Env, order: any, paymentId: string
     }),
   });
 
+  // Tanpa pemeriksaan ini, penolakan gateway berubah jadi objek berisi undefined
+  // dan tetap dilaporkan sukses ke pembeli. Fungsi refund di berkas ini sudah
+  // memeriksanya sejak awal — di sini terlewat.
+  if (!res.ok) {
+    throw new Error(`Midtrans menolak transaksi (HTTP ${res.status}): ${await res.text()}`);
+  }
+
   const data = await res.json() as { token: string; redirect_url: string };
   return {
     gatewayTxnId:   paymentId,
@@ -264,6 +321,10 @@ async function createXenditInvoice(env: Env, order: any, paymentId: string) {
       },
     }),
   });
+
+  if (!res.ok) {
+    throw new Error(`Xendit menolak invoice (HTTP ${res.status}): ${await res.text()}`);
+  }
 
   const data = await res.json() as { id: string; invoice_url: string };
   return {

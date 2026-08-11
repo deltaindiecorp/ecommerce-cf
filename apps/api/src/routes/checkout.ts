@@ -198,6 +198,7 @@ checkoutRouter.post("/", optionalAuth, async (c) => {
     shippingCost,
     discount,
     total,
+    paymentMethod:   data.paymentMethod,
     voucherCode:     data.voucherCode ?? null,
     customerNote:    data.note ?? null,
   });
