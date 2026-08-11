@@ -1,14 +1,25 @@
-import { Link } from "@remix-run/react";
+import { Link, useRouteLoaderData } from "@remix-run/react";
+import type { loader as rootLoader } from "~/root";
 
 export function SiteFooter() {
+  const rootData = useRouteLoaderData<typeof rootLoader>("root");
+  const store     = rootData?.store;
+  const storeName = store?.storeName ?? "Deltacommerce";
+
   return (
     <footer className="w-full border-t bg-white mt-10">
       <div className="max-w-6xl mx-auto px-4 py-10 grid grid-cols-2 md:grid-cols-4 gap-8">
         <div className="col-span-2 md:col-span-1">
-          <h3 className="font-bold text-blue-600 mb-2">Deltacommerce</h3>
+          <h3 className="font-bold text-blue-600 mb-2">{storeName}</h3>
           <p className="text-sm text-gray-500">
-            Platform belanja online terpercaya untuk kebutuhan harian Anda dengan harga terbaik.
+            {store?.tagline ?? "Platform belanja online terpercaya untuk kebutuhan harian Anda dengan harga terbaik."}
           </p>
+          {(store?.supportEmail || store?.supportPhone) && (
+            <p className="text-xs text-gray-400 mt-3 space-x-2">
+              {store.supportEmail && <span>{store.supportEmail}</span>}
+              {store.supportPhone && <span>{store.supportPhone}</span>}
+            </p>
+          )}
         </div>
         <div>
           <h4 className="font-semibold text-gray-800 mb-2 text-sm">Layanan Pelanggan</h4>
@@ -34,7 +45,7 @@ export function SiteFooter() {
         </div>
       </div>
       <div className="border-t py-4 text-center text-xs text-gray-400">
-        © {new Date().getFullYear()} Deltacommerce. Seluruh hak cipta dilindungi.
+        © {new Date().getFullYear()} {storeName}. Seluruh hak cipta dilindungi.
       </div>
     </footer>
   );

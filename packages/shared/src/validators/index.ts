@@ -158,6 +158,17 @@ export const orderStatusUpdateSchema = z.object({
   note: z.string().max(500).nullable().optional(),
 });
 
+// ─── Admin: Pengaturan Toko ───────────────────────────────────────────────────
+// Semua opsional: pengaturan diperbarui sebagian, dan field yang dikosongkan
+// harus benar-benar jadi NULL (bukan dilewati drizzle) — karena itu .nullable().
+export const storeSettingsUpdateSchema = z.object({
+  storeName:    z.string().min(1).max(60),
+  tagline:      z.string().max(200).nullable().optional(),
+  supportEmail: z.string().email().nullable().optional().or(z.literal("").transform(() => null)),
+  supportPhone: z.string().max(30).nullable().optional(),
+  address:      z.string().max(300).nullable().optional(),
+}).partial({ storeName: true });
+
 // ─── Pembayaran ───────────────────────────────────────────────────────────────
 // `gateway` sengaja TIDAK diterima dari klien. Gateway ditentukan dari
 // paymentMethod yang dipilih pembeli saat checkout dan tersimpan di order —

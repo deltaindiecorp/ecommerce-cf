@@ -64,6 +64,13 @@
       "when": 1786433988211,
       "tag": "0008_flowery_wendigo",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1786445338248,
+      "tag": "0009_flaky_the_fallen",
+      "breakpoints": true
     }
   ]
 }

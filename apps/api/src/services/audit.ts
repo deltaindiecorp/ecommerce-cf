@@ -21,12 +21,13 @@ export type AuditAction =
   | "warehouse.updated"
   | "warehouse.deactivated"
   | "voucher.created"
-  | "voucher.deactivated";
+  | "voucher.deactivated"
+  | "settings.updated";
 
 export type AuditEntry = {
   actorId?:   string | null;
   action:     AuditAction;
-  targetType: "order" | "product" | "warehouse" | "voucher" | "payment";
+  targetType: "order" | "product" | "warehouse" | "voucher" | "payment" | "settings";
   targetId?:  string | null;
   metadata?:  Record<string, unknown> | null;
 };

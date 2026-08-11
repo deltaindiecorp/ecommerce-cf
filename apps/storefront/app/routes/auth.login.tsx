@@ -1,7 +1,8 @@
 import type { ActionFunctionArgs } from "@remix-run/cloudflare";
 import { json, redirect } from "@remix-run/cloudflare";
-import { Form, useActionData, useNavigation, Link } from "@remix-run/react";
+import { Form, useActionData, useNavigation, Link , useRouteLoaderData } from "@remix-run/react";
 
+import type { loader as rootLoader } from "~/root";
 import { apiFetch, formatApiError } from "~/lib/api";
 import { authCookie } from "~/lib/session";
 
@@ -27,6 +28,8 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export default function LoginPage() {
+  const rootData  = useRouteLoaderData<typeof rootLoader>("root");
+  const storeName = rootData?.store?.storeName ?? "Deltacommerce";
   const actionData = useActionData<typeof action>();
   const nav        = useNavigation();
   const isLoading  = nav.state === "submitting";
@@ -35,7 +38,7 @@ export default function LoginPage() {
     <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
       <div className="bg-white rounded-xl shadow p-8 w-full max-w-sm">
         <div className="text-center mb-6">
-          <Link to="/" className="text-2xl font-bold text-blue-600">Deltacommerce</Link>
+          <Link to="/" className="text-2xl font-bold text-blue-600">{storeName}</Link>
           <h1 className="text-xl font-semibold mt-3 text-gray-800">Masuk ke Akun</h1>
         </div>
 

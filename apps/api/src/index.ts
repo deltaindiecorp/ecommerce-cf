@@ -17,6 +17,7 @@ import { authRouter }     from "./routes/auth";
 import { adminRouter }    from "./routes/admin";
 import { uploadRouter }   from "./routes/upload";
 import { voucherAdminRouter } from "./routes/vouchers";
+import { settingsRouter } from "./routes/settings";
 
 // Durable Objects (export required by Cloudflare)
 export { CartDurableObject, StockLockDurableObject } from "./durable-objects/stock-lock-do";
@@ -57,6 +58,10 @@ app.route("/api/shipping",  shippingRouter);
 app.route("/api/admin",     adminRouter);
 app.route("/api/upload",    uploadRouter);
 app.route("/api/admin/vouchers", voucherAdminRouter);
+// Satu router untuk dua path: GET publik dipakai storefront, PATCH-nya
+// dilindungi requireAdmin di dalam router.
+app.route("/api/settings",       settingsRouter);
+app.route("/api/admin/settings", settingsRouter);
 
 // ─── 404 ──────────────────────────────────────────────────────────────────────
 app.notFound((c) => c.json({ success: false, error: "Route tidak ditemukan" }, 404));

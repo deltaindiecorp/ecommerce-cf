@@ -35,6 +35,7 @@ const NAV_ITEMS = [
   { href: "/products",   label: "Produk",     icon: "📦" },
   { href: "/categories", label: "Kategori",   icon: "🗂️" },
   { href: "/vouchers",   label: "Voucher",    icon: "🎟️", adminOnly: true },
+  { href: "/settings",   label: "Pengaturan", icon: "⚙️", adminOnly: true },
 ];
 
 function getInitials(name?: string | null): string {

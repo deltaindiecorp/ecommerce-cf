@@ -14,16 +14,20 @@ export const links: LinksFunction = () => [{ rel: "stylesheet", href: stylesheet
 export async function loader({ request }: LoaderFunctionArgs) {
   const cartId = request.headers.get("Cookie")?.match(/cartId=([^;]+)/)?.[1];
 
-  const [categoriesBody, cartBody] = await Promise.all([
+  const [categoriesBody, cartBody, settingsBody] = await Promise.all([
     apiFetch<any[]>(request, "/api/catalog/categories"),
     cartId
       ? apiFetch<{ itemCount?: number }>(request, "/api/cart", { headers: { "X-Cart-Id": cartId } })
       : Promise.resolve(null),
+    apiFetch<any>(request, "/api/settings"),
   ]);
 
   return json({
     categories:    categoriesBody.data ?? [],
     cartItemCount: cartBody?.data?.itemCount ?? 0,
+    // Identitas toko datang dari DB, bukan tertanam di komponen — supaya tiap
+    // deployment klien bisa memakai mereknya sendiri tanpa menyentuh kode.
+    store:         settingsBody.data ?? { storeName: "Deltacommerce" },
   });
 }
 
