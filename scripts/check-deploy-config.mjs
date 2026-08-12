@@ -11,20 +11,32 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { pendingMigrations } from "./db-migrate.mjs";
+import { generatedTomlPath, listProfiles, profileFromArgv } from "./profile.mjs";
 
-const here      = dirname(fileURLToPath(import.meta.url));
-const apiDir    = resolve(here, "../apps/api");
-const template  = resolve(apiDir, "wrangler.toml");
-const generated = resolve(apiDir, "wrangler.generated.toml");
+const here     = dirname(fileURLToPath(import.meta.url));
+const apiDir   = resolve(here, "../apps/api");
+const template = resolve(apiDir, "wrangler.toml");
 
 const die = (msg) => { console.error(`\n\x1b[1;31mDeploy dibatalkan\x1b[0m\n${msg}\n`); process.exit(1); };
 
+const profile = profileFromArgv();
+if (!profile) {
+  die(
+    "Profil deployment belum ditentukan — deploy selalu menyasar satu klien.\n\n" +
+    "  pnpm deploy:client <profil>\n\n" +
+    (listProfiles().length
+      ? `Profil yang ada: ${listProfiles().join(", ")}`
+      : "Belum ada satu pun. Buat lewat: ./scripts/setup.sh <nama>"),
+  );
+}
+
+const generated = generatedTomlPath(profile);
 if (!existsSync(generated)) {
   die(
-    "apps/api/wrangler.generated.toml tidak ditemukan.\n\n" +
+    `Config deploy untuk profil "${profile}" tidak ditemukan.\n\n` +
     "Berkas itu dibuat scripts/setup.sh dan berisi ID resource Cloudflare untuk\n" +
-    "deployment ini. Jalankan dulu:\n\n" +
-    "  ./scripts/setup.sh\n",
+    "deployment tersebut. Jalankan dulu:\n\n" +
+    `  ./scripts/setup.sh ${profile}\n`,
   );
 }
 
@@ -32,14 +44,14 @@ if (!existsSync(generated)) {
 // tercermin — misalnya setelah menarik perbaikan dari repo template.
 if (statSync(template).mtimeMs > statSync(generated).mtimeMs) {
   die(
-    "apps/api/wrangler.toml lebih baru daripada wrangler.generated.toml.\n\n" +
+    `apps/api/wrangler.toml lebih baru daripada wrangler.${profile}.generated.toml.\n\n` +
     "Kemungkinan ada binding atau konfigurasi baru dari template yang belum\n" +
-    "masuk ke config deployment ini. Jalankan ulang:\n\n" +
-    "  ./scripts/setup.sh\n",
+    "masuk ke config deployment ini. Render ulang:\n\n" +
+    `  node scripts/gen-wrangler.mjs --profile ${profile}\n`,
   );
 }
 
-console.log("✓ wrangler.generated.toml siap dipakai deploy");
+console.log(`✓ config profil "${profile}" siap dipakai deploy`);
 
 // ─── Migrasi harus lebih dulu ─────────────────────────────────────────────────
 // Urutannya bukan selera. Migrasi 0004 menjalankan
@@ -55,14 +67,14 @@ if (process.env.SKIP_MIGRATION_CHECK === "1") {
 } else {
   let pending = null; // null = tidak terbaca, bukan "tidak ada"
   try {
-    pending = pendingMigrations(true);
+    pending = pendingMigrations(true, profile);
   } catch (err) {
     // Tidak bisa dibaca ≠ aman. Tapi juga bukan alasan memblokir deploy yang
     // mungkin sah — jadi diperingatkan, bukan dihentikan. Yang penting: JANGAN
     // mencetak tanda centang sesudah ini, karena tidak ada yang terverifikasi.
     const alasan = String(err.message).split("\n")[0].replace(/^Command failed: .*/, "wrangler gagal dijalankan");
     console.warn(`⚠ Status migrasi remote tidak terbaca: ${alasan}`);
-    console.warn("  Deploy diteruskan, tapi pastikan sendiri `pnpm db:status:remote` bersih.");
+    console.warn(`  Deploy diteruskan, tapi pastikan sendiri \`pnpm db:status:remote --profile ${profile}\` bersih.`);
   }
 
   if (pending && pending.length > 0) {
@@ -70,7 +82,7 @@ if (process.env.SKIP_MIGRATION_CHECK === "1") {
       `Ada ${pending.length} migrasi yang belum diterapkan ke D1 remote:\n\n` +
       pending.map((n) => `  · ${n}`).join("\n") +
       "\n\nJalankan migrasinya DULU, baru deploy Worker:\n\n" +
-      "  pnpm db:migrate:remote\n\n" +
+      `  pnpm db:migrate:remote --profile ${profile}\n\n` +
       "Urutan ini penting — deploy duluan bisa membuat migrasi menimpa data yang\n" +
       "baru ditulis Worker. Kalau kamu yakin ingin melewatinya: SKIP_MIGRATION_CHECK=1\n",
     );

@@ -52,52 +52,95 @@ ecommerce-cf/
 │       └── app/routes/
 │           ├── checkout.tsx
 │           └── track.tsx
-└── packages/
-    ├── db/               # Drizzle schema + D1 client
-    │   └── src/schema/
-    │       ├── catalog.ts    # users, products, variants, categories
-    │       ├── warehouse.ts  # warehouses, inventory, movements, transfers
-    │       └── orders.ts     # orders, order_items, payments, shipments
-    └── shared/           # Types, validators (Zod), constants
+├── packages/
+│   ├── db/               # Drizzle schema + D1 client
+│   │   ├── src/schema/
+│   │   │   ├── catalog.ts    # users, products, variants, categories
+│   │   │   ├── warehouse.ts  # warehouses, inventory, movements, transfers
+│   │   │   └── orders.ts     # orders, order_items, payments, shipments
+│   │   └── migrations/   # SQL hasil drizzle-kit generate
+│   └── shared/           # Types, validators (Zod), constants
+├── deployments/          # Satu berkas .env per klien — GITIGNORED
+│   └── example.env       #   kecuali ini: dokumentasi formatnya
+└── scripts/
+    ├── profile.mjs       # Definisi profil deployment + penurunan nama resource
+    ├── setup.sh          # Provisioning Cloudflare untuk satu profil
+    ├── gen-wrangler.mjs  # wrangler.toml + profil → config deploy
+    ├── db-migrate.mjs    # Satu-satunya jalur migrasi D1
+    ├── check-deploy-config.mjs  # Penjaga sebelum deploy
+    └── deploy.mjs        # Deploy berurutan: migrasi → Worker → Pages
 ```
 
-## Quick Start
+## Dev Lokal
+
+D1/KV/R2/Queues disimulasikan lewat Miniflare, jadi tidak perlu resource
+Cloudflare sama sekali:
 
 ```bash
-# 1. Install dependencies
 pnpm install
-
-# 2. Login ke Cloudflare (sekali saja per akun)
-npx wrangler login
-
-# 3. Provisioning semua resource Cloudflare + suntik ID ke wrangler.toml
-#    (otomatis: D1, 3x KV, R2, 2x Queue, migration D1 remote)
-./scripts/setup.sh
-
-# 4. Isi secret (lihat daftar lengkap di akhir output scripts/setup.sh)
-cd apps/api
-wrangler secret put JWT_SECRET
-wrangler secret put MIDTRANS_SERVER_KEY
-wrangler secret put XENDIT_SECRET_KEY
-wrangler secret put RAJAONGKIR_API_KEY
-wrangler secret put BINDERBYTE_API_KEY
-wrangler secret put RESEND_API_KEY
-cd ../..
-
-# 5. Dev mode
-pnpm dev
-
-# 6. Deploy
-pnpm deploy
-```
-
-Untuk dev lokal tanpa resource Cloudflare asli (D1/KV/R2/Queues disimulasikan lewat Miniflare):
-
-```bash
-pnpm db:migrate                          # migrasi ke D1 lokal
+pnpm db:migrate                                    # migrasi ke D1 lokal
 cp apps/api/.dev.vars.example apps/api/.dev.vars   # isi JWT_SECRET & ADMIN_BOOTSTRAP_SECRET
 pnpm dev
 ```
+
+## Deploy: Profil per Klien
+
+Satu repo melayani banyak toko. Yang membedakan tiap deployment hanya
+**deployments/`<profil>`.env** — nama profil, domain, dan ID resource
+Cloudflare-nya. Berkas itu tidak dilacak git.
+
+Prinsipnya: **nol berkas ter-track yang perlu diedit per klien.** Kalau
+menambah klien mengharuskan mengubah berkas yang di-commit, dua klien akan
+berebut berkas yang sama dan setiap `git pull` dari template berakhir konflik.
+
+Nama profil ikut jadi awalan nama resource Cloudflare (`meadza-api`,
+`meadza-db`, `meadza-notification-queue`, …), karena dua deployment dalam satu
+akun tidak boleh punya nama resource yang sama.
+
+```bash
+# 1. Login ke Cloudflare (sekali per akun)
+npx wrangler login
+
+# 2. Buat profil — pertama kali ia hanya membuat kerangkanya
+./scripts/setup.sh meadza
+
+# 3. Isi domain di deployments/meadza.env
+#    STORE_URL, ADMIN_URL, API_BASE, EMAIL_FROM_NAME, EMAIL_FROM_ADDRESS
+
+# 4. Jalankan lagi — provisioning D1, 3x KV, R2, 2x Queue, lalu migrasi
+./scripts/setup.sh meadza
+
+# 5. Isi secret (daftar lengkapnya dicetak di akhir langkah 4)
+cd apps/api
+npx wrangler secret put JWT_SECRET --config wrangler.meadza.generated.toml
+# … dst
+cd ../..
+
+# 6. Deploy: migrasi → Worker → Pages storefront & admin
+pnpm run deploy:client meadza
+```
+
+Klien berikutnya tinggal mengulang dengan nama lain:
+
+```bash
+./scripts/setup.sh larizq
+pnpm run deploy:client larizq
+
+pnpm run profiles          # daftar profil yang ada
+```
+
+Beberapa catatan yang menghemat waktu:
+
+- **Storefront dan admin dibangun ulang per klien.** `VITE_API_BASE` dibakar
+  saat build, jadi artefak build satu klien tidak bisa dipakai klien lain —
+  `deploy:client` yang mengurus ini.
+- **Urutannya dijaga**, bukan diserahkan ke kebiasaan: migrasi dulu, baru
+  Worker, baru Pages. Lihat bagian Migrasi Database di bawah.
+- **Deploy sebagian**: `pnpm run deploy:client meadza --only=admin`
+- **deployments/`<profil>`.env tidak ada di git.** Simpan cadangannya sendiri —
+  berkas itulah yang menghubungkan repo ini dengan resource Cloudflare klien
+  tersebut. Kehilangan berkas itu berarti mencari ID-nya lagi satu per satu
+  lewat dashboard.
 
 ## Migrasi Database
 
@@ -108,18 +151,19 @@ yang sudah dijalankan tidak akan terulang:
 pnpm db:status           # apa yang sudah & belum diterapkan (lokal)
 pnpm db:migrate          # jalankan yang belum (lokal)
 
-pnpm db:status:remote    # sama, untuk D1 di Cloudflare
-pnpm db:migrate:remote
+# Remote selalu menyasar satu klien, jadi profilnya wajib disebut
+pnpm db:status:remote  -- --profile meadza
+pnpm db:migrate:remote -- --profile meadza
 ```
 
 Mengubah schema di `packages/db/src/schema/` → `pnpm db:generate` untuk membuat
 SQL migrasinya, lalu commit hasilnya.
 
-**Migrasi dijalankan sebelum deploy Worker, bukan sesudah.** `pnpm deploy` akan
-menolak jalan selama masih ada migrasi tertunda. Urutan ini bukan selera:
-migrasi `0004` menyalin `qty_available` ke `qty_on_hand` sebelum menjatuhkan
-kolom lamanya — kalau Worker versi baru sudah menulis duluan, angka-angka itu
-ditimpa data basi tanpa error apa pun.
+**Migrasi dijalankan sebelum deploy Worker, bukan sesudah.** `deploy:client`
+menjalankannya sendiri, dan menolak jalan selama masih ada migrasi tertunda.
+Urutan ini bukan selera: migrasi `0004` menyalin `qty_available` ke
+`qty_on_hand` sebelum menjatuhkan kolom lamanya — kalau Worker versi baru sudah
+menulis duluan, angka-angka itu ditimpa data basi tanpa error apa pun.
 
 ### Database yang sudah ada sebelum ada pelacakan
 
@@ -134,9 +178,11 @@ pnpm db:baseline -- --write   # tulis catatannya
 pnpm db:migrate               # lanjutkan sisanya
 ```
 
+Untuk D1 di Cloudflare, pakai varian `:remote` dan sebutkan profilnya:
+`pnpm db:baseline:remote -- --profile meadza --write`.
+
 `baseline` tidak menjalankan ulang SQL apa pun — ia hanya mencatat apa yang
-sudah ada. Cukup sekali per database. Ganti ke `db:baseline:remote` untuk D1 di
-Cloudflare.
+sudah ada. Cukup sekali per database.
 
 ## Migration Path ke Neon PostgreSQL
 

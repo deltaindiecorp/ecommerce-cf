@@ -12,12 +12,13 @@
     "test": "turbo run test",
     "db:generate": "turbo run db:generate",
     "db:migrate": "node scripts/db-migrate.mjs apply --local",
-    "deploy": "turbo run deploy",
     "db:status": "node scripts/db-migrate.mjs status --local",
     "db:status:remote": "node scripts/db-migrate.mjs status --remote",
     "db:migrate:remote": "node scripts/db-migrate.mjs apply --remote",
     "db:baseline": "node scripts/db-migrate.mjs baseline --local",
-    "db:baseline:remote": "node scripts/db-migrate.mjs baseline --remote"
+    "db:baseline:remote": "node scripts/db-migrate.mjs baseline --remote",
+    "deploy:client": "node scripts/deploy.mjs",
+    "profiles": "node scripts/profile.mjs list"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

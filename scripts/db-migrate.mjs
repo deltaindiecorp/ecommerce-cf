@@ -27,6 +27,8 @@ import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { generatedTomlPath, listProfiles, profileFromArgv } from "./profile.mjs";
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const API_DIR = join(ROOT, "apps", "api");
 const MIGRATIONS_DIR = join(ROOT, "packages", "db", "migrations");
@@ -71,17 +73,35 @@ function probeSql(spec) {
 
 // ─── Wrangler ─────────────────────────────────────────────────────────────────
 
+// Remote selalu menunjuk satu klien tertentu, jadi profilnya wajib — tidak ada
+// "database remote" tunggal di repo ini. Lokal justru sebaliknya: satu D1
+// Miniflare dipakai bersama, dan placeholder di template tidak mengganggu.
+// Satu perintah selalu menyasar satu database, jadi profilnya disimpan sekali
+// di sini alih-alih diteruskan lewat setiap fungsi query di bawah.
+let CURRENT_PROFILE = "";
+
 function wranglerConfig(remote) {
-  const generated = join(API_DIR, "wrangler.generated.toml");
-  if (existsSync(generated)) return generated;
-  if (remote) {
+  if (!remote) return join(API_DIR, "wrangler.toml");
+
+  const name = CURRENT_PROFILE || profileFromArgv();
+  if (!name) {
     fail(
-      "wrangler.generated.toml tidak ada — migrasi remote butuh database_id asli,\n" +
-      "  sedangkan wrangler.toml yang di-track masih berisi placeholder.\n" +
-      "  Jalankan ./scripts/setup.sh dulu.",
+      "Migrasi remote butuh profil deployment.\n" +
+      "  Pakai --profile <nama>, atau set DEPLOY_PROFILE.\n" +
+      (listProfiles().length
+        ? `  Tersedia: ${listProfiles().join(", ")}`
+        : "  Belum ada satu pun. Buat lewat: ./scripts/setup.sh <nama>"),
     );
   }
-  return join(API_DIR, "wrangler.toml"); // lokal: placeholder tidak masalah
+
+  const generated = generatedTomlPath(name);
+  if (!existsSync(generated)) {
+    fail(
+      `Config deploy untuk profil "${name}" belum ada.\n` +
+      `  Dibuat oleh: ./scripts/setup.sh ${name}`,
+    );
+  }
+  return generated;
 }
 
 function wrangler(args, { remote, capture = false }) {
@@ -96,7 +116,25 @@ function wrangler(args, { remote, capture = false }) {
     return out ?? "";
   } catch (err) {
     if (!capture) process.exit(err.status ?? 1);
-    throw new Error(err.stderr?.toString() || err.message);
+    // wrangler menulis sebagian errornya ke stdout, dan stderr-nya bercampur
+    // peringatan npm yang tidak ada hubungannya dengan kegagalan. Mengambil
+    // baris pertama apa adanya pernah membuat "Unknown env config reporter"
+    // terbaca sebagai penyebab error.
+    const mentah = [err.stdout, err.stderr, err.message].map((x) => String(x ?? "")).join("\n");
+    const berarti = mentah
+      .split("\n")
+      .map((l) => l.replace(/\x1b\[[0-9;]*m/g, "").trim())
+      .filter((l) => l && !/^npm (warn|notice)/i.test(l) && !/^Command failed:/.test(l)
+                     && !/wrangler \d|update available|^-+$|^▲|Please update|npm install|After installation/i.test(l))
+      .slice(0, 6);
+
+    // Dengan --json, wrangler membungkus errornya jadi objek; yang berguna bagi
+    // pembaca cuma field "text".
+    const teks = berarti
+      .map((l) => l.match(/"text"\s*:\s*"(.+?)"/)?.[1])
+      .filter(Boolean);
+
+    throw new Error((teks.length ? teks : berarti).slice(0, 3).join("\n  ") || "wrangler gagal dijalankan");
   }
 }
 
@@ -268,7 +306,8 @@ function cmdBaseline(remote, write) {
 // Dipakai scripts/check-deploy-config.mjs untuk menahan deploy Worker selama
 // masih ada migrasi tertunda. Melempar kalau keadaannya tidak bisa dibaca —
 // pemanggil yang memutuskan apakah itu alasan membatalkan deploy.
-export function pendingMigrations(remote) {
+export function pendingMigrations(remote, profileName = "") {
+  if (profileName) CURRENT_PROFILE = profileName;
   if (!hasTrackingTable(remote)) {
     if (!isEmptyDatabase(remote)) throw new Error("database belum di-baseline");
     return migrationNames();
@@ -288,7 +327,8 @@ function main() {
   if (remote && argv.includes("--local")) fail("Pilih salah satu: --local atau --remote.");
   if (!existsSync(MIGRATIONS_DIR)) fail(`Folder migrasi tidak ditemukan: ${MIGRATIONS_DIR}`);
 
-  const target = remote ? "remote" : "lokal";
+  CURRENT_PROFILE = profileFromArgv(argv);
+  const target = remote ? `remote (profil: ${CURRENT_PROFILE || "?"})` : "lokal";
   switch (cmd) {
     case "status":   info(`Database ${target}`); return cmdStatus(remote);
     case "apply":    info(`Database ${target}`); return cmdApply(remote);
@@ -314,4 +354,10 @@ mencatatnya tanpa menjalankan ulang apa pun. Cukup sekali per database.
 
 // Berkas ini juga di-import sebagai modul oleh check-deploy-config.mjs, jadi
 // CLI-nya hanya jalan kalau memang dieksekusi langsung.
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    main();
+  } catch (err) {
+    fail(err.message);
+  }
+}

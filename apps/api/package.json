@@ -5,7 +5,6 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev --port 8787",
-    "deploy": "node ../../scripts/check-deploy-config.mjs && wrangler deploy --config wrangler.generated.toml",
     "type-check": "tsc --noEmit",
     "build": "tsc --noEmit",
     "test": "vitest run"

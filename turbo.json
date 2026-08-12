@@ -19,12 +19,6 @@
       "cache": false,
       "persistent": true
     },
-    "deploy": {
-      "dependsOn": [
-        "build"
-      ],
-      "cache": false
-    },
     "db:generate": {
       "cache": false
     },

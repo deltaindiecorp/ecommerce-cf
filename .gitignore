@@ -11,6 +11,15 @@ build
 .DS_Store
 
 # Konfigurasi deploy per-klien hasil scripts/setup.sh — berisi ID resource
-# Cloudflare, dan sengaja tidak dilacak supaya clone klien tetap identik
-# dengan template (lihat komentar di scripts/setup.sh).
+# Cloudflare, dan sengaja tidak dilacak supaya repo tetap identik untuk semua
+# klien (lihat komentar di scripts/profile.mjs).
 wrangler.generated.toml
+wrangler.*.generated.toml
+
+# Profil deployment: satu berkas per klien, berisi domain dan ID resource-nya.
+# example.env justru HARUS ikut — itu dokumentasinya.
+deployments/*.env
+!deployments/example.env
+
+# Nilai VITE_* per klien untuk build Pages, dihasilkan scripts/deploy.mjs.
+apps/*/.env.deploy
