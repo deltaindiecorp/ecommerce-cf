@@ -99,6 +99,13 @@ Nama profil ikut jadi awalan nama resource Cloudflare (`meadza-api`,
 `meadza-db`, `meadza-notification-queue`, …), karena dua deployment dalam satu
 akun tidak boleh punya nama resource yang sama.
 
+Profil juga menentukan **akun Cloudflare**-nya lewat `CLOUDFLARE_ACCOUNT_ID`,
+jadi klien yang menumpang akun agency dan klien yang punya akun sendiri bisa
+dikelola dari mesin yang sama. `setup.sh` menyematkan nilainya otomatis saat
+provisioning; kalau login wrangler punya akses ke lebih dari satu akun, ia
+berhenti dan meminta ditentukan — resource produksi yang terlanjur lahir di akun
+yang salah tidak bisa dipindah, hanya dibuat ulang.
+
 ```bash
 # 1. Login ke Cloudflare (sekali per akun)
 npx wrangler login

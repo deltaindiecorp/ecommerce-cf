@@ -99,7 +99,7 @@ for (const nama of target) {
       }
       run([join(ROOT, "scripts", "deploy.mjs"), "--profile", nama, ...(bagian ? [`--only=${bagian}`] : [])]);
     }
-    hasil.push({ nama, status: "berhasil", detik: Math.round((Date.now() - mulai) / 1000) });
+    hasil.push({ nama, status: dryRun ? "rencana" : "berhasil", detik: Math.round((Date.now() - mulai) / 1000) });
   } catch (err) {
     hasil.push({ nama, status: "gagal", detik: Math.round((Date.now() - mulai) / 1000), pesan: String(err.message).split("\n")[0] });
     if (!keepGoing) {
@@ -120,7 +120,7 @@ for (const nama of target) {
 console.log(`\n${BLUE}${"─".repeat(70)}${OFF}`);
 console.log(`${BLUE}Ringkasan rollout${OFF}\n`);
 for (const r of hasil) {
-  const tanda = r.status === "berhasil" ? `${GREEN}✓${OFF}` : r.status === "gagal" ? `${RED}✘${OFF}` : `${YELLOW}·${OFF}`;
+  const tanda = r.status === "gagal" ? `${RED}✘${OFF}` : r.status === "berhasil" ? `${GREEN}✓${OFF}` : `${YELLOW}·${OFF}`;
   const durasi = r.detik != null ? `${DIM}${r.detik}s${OFF}` : "";
   console.log(`  ${tanda} ${r.nama.padEnd(20)} ${r.status.padEnd(10)} ${durasi}${r.pesan ? ` ${DIM}${r.pesan}${OFF}` : ""}`);
 }
@@ -129,7 +129,9 @@ const gagal = hasil.filter((r) => r.status === "gagal");
 const dilewati = hasil.filter((r) => r.status === "dilewati");
 console.log("");
 if (gagal.length === 0 && dilewati.length === 0) {
-  console.log(`${GREEN}✓${OFF} ${hasil.length} profil selesai.\n`);
+  console.log(dryRun
+    ? `${GREEN}✓${OFF} ${hasil.length} profil siap di-rollout. Jalankan tanpa --dry-run untuk benar-benar deploy.\n`
+    : `${GREEN}✓${OFF} ${hasil.length} profil selesai.\n`);
 } else {
   console.log(`${gagal.length} gagal, ${dilewati.length} dilewati, ${hasil.length - gagal.length - dilewati.length} berhasil.\n`);
   process.exit(1);

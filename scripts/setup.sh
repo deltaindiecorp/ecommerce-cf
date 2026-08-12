@@ -63,7 +63,42 @@ PROFILE_VARS="$(node "$SCRIPT_DIR/profile.mjs" print "$PROFILE")" || fail "Profi
 eval "$PROFILE_VARS"
 
 log "Cek autentikasi wrangler"
-(cd "$API_DIR" && npx wrangler whoami) || fail "Belum login. Jalankan: npx wrangler login"
+WHOAMI=$(cd "$API_DIR" && npx wrangler whoami 2>&1) || { echo "$WHOAMI"; fail "Belum login. Jalankan: npx wrangler login"; }
+echo "$WHOAMI"
+
+# ─── Akun Cloudflare ──────────────────────────────────────────────────────────
+# Sebagian klien tinggal di akun agency, sebagian punya akunnya sendiri. Kalau
+# profil belum menyebut akun mana, resource dibuat di akun yang kebetulan aktif —
+# dan resource produksi klien yang lahir di akun yang salah tidak bisa dipindah,
+# hanya bisa dibuat ulang. Karena itu akunnya dipastikan SEKARANG, lalu
+# disematkan ke profil supaya semua perintah berikutnya menyasar akun yang sama.
+if [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+  export CLOUDFLARE_ACCOUNT_ID
+  log "Akun Cloudflare: $CLOUDFLARE_ACCOUNT_ID (dari profil)"
+else
+  AKUN_IDS=$(printf '%s\n' "$WHOAMI" | node "$SCRIPT_DIR/profile.mjs" accounts)
+  JUMLAH=$(printf '%s' "$AKUN_IDS" | grep -c . || true)
+
+  if [ "$JUMLAH" -eq 1 ]; then
+    CLOUDFLARE_ACCOUNT_ID="$AKUN_IDS"
+    export CLOUDFLARE_ACCOUNT_ID
+    node "$SCRIPT_DIR/profile.mjs" set "$PROFILE" "CLOUDFLARE_ACCOUNT_ID=$CLOUDFLARE_ACCOUNT_ID"
+    log "Akun Cloudflare: $CLOUDFLARE_ACCOUNT_ID (disematkan ke profil)"
+  elif [ "$JUMLAH" -gt 1 ]; then
+    fail "Login ini punya akses ke $JUMLAH akun Cloudflare:
+
+$AKUN_IDS
+
+Sebutkan yang mana untuk klien \"$PROFILE\" — menebak berarti resource produksi
+bisa lahir di akun klien lain:
+
+  CLOUDFLARE_ACCOUNT_ID=<salah satu di atas>
+
+isikan ke deployments/$PROFILE.env, lalu jalankan lagi script ini."
+  else
+    warn "ID akun tidak terbaca dari whoami — melanjutkan dengan akun bawaan wrangler"
+  fi
+fi
 
 # Config bootstrap sementara. Perintah `kv namespace create` menurunkan judul
 # namespace dari `name` di config, jadi config yang dipakai saat provisioning

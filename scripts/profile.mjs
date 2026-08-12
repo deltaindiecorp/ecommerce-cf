@@ -128,6 +128,28 @@ export function resolveProfile(name, raw) {
   return p;
 }
 
+// ─── Akun Cloudflare ──────────────────────────────────────────────────────────
+// CLOUDFLARE_ACCOUNT_ID opsional, dan justru itu gunanya: sebagian klien tinggal
+// di akun agency, sebagian punya akunnya sendiri — mis. klien yang minta
+// kepemilikan penuh, atau yang sudah diserahterimakan. Keduanya harus bisa
+// dijalankan dari mesin yang sama tanpa saling menimpa.
+//
+// Kalau kosong, wrangler memakai akun yang kebetulan sedang aktif. Itu aman
+// selama loginnya cuma punya satu akun; begitu ada dua, "kebetulan" bukan dasar
+// yang cukup untuk membuat resource produksi — karena itu setup.sh menyematkan
+// ID akun ke profil begitu ia tahu pasti yang mana.
+//
+// Wrangler membacanya dari environment, jadi cukup diteruskan ke child process.
+export function wranglerEnv(p) {
+  return p?.CLOUDFLARE_ACCOUNT_ID ? { CLOUDFLARE_ACCOUNT_ID: p.CLOUDFLARE_ACCOUNT_ID } : {};
+}
+
+// ID akun muncul sebagai 32 heksadesimal di tabel keluaran `wrangler whoami`.
+// Dipisah dari pemanggilannya supaya bisa diuji tanpa login Cloudflare.
+export function parseAccountIds(text) {
+  return [...new Set(String(text).match(/\b[0-9a-f]{32}\b/g) ?? [])];
+}
+
 // ID resource baru ada setelah provisioning, jadi perintah yang butuh config
 // deploy siap-pakai memeriksanya terpisah dari kelengkapan profil.
 export const RESOURCE_IDS = ["D1_DATABASE_ID", "CART_KV_ID", "SESSION_KV_ID", "CACHE_KV_ID"];
@@ -209,8 +231,15 @@ function cli() {
       case "list":
         for (const n of listProfiles()) console.log(n);
         break;
+      case "accounts": {
+        // Dipakai setup.sh: `npx wrangler whoami | node profile.mjs accounts`.
+        let masuk = "";
+        process.stdin.on("data", (d) => (masuk += d));
+        process.stdin.on("end", () => { for (const id of parseAccountIds(masuk)) console.log(id); });
+        break;
+      }
       default:
-        console.error("Perintah: print <nama> | set <nama> KEY=VAL… | scaffold <nama> | list");
+        console.error("Perintah: print <nama> | set <nama> KEY=VAL… | scaffold <nama> | list | accounts (dari stdin)");
         process.exit(1);
     }
   } catch (err) {

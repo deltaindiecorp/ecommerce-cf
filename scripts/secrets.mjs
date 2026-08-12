@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   API_DIR, DEPLOYMENTS_DIR, ROOT,
-  generatedTomlPath, loadProfile, parseEnvFile, profileFromArgv,
+  generatedTomlPath, loadProfile, parseEnvFile, profileFromArgv, wranglerEnv,
 } from "./profile.mjs";
 
 const RED = "\x1b[31m", GREEN = "\x1b[32m", YELLOW = "\x1b[33m", DIM = "\x1b[2m", OFF = "\x1b[0m";
@@ -69,12 +69,14 @@ function bacaSecrets(name) {
   return parseEnvFile(readFileSync(path, "utf8"));
 }
 
-function wrangler(args, { silent = false } = {}) {
+// Secret melekat pada Worker di akun tertentu, jadi akun profil ikut diteruskan —
+// tanpa itu rahasia klien bisa terpasang di Worker bernama sama milik akun lain.
+function wrangler(args, { silent = false, akun = {} } = {}) {
   return execFileSync("npx", ["wrangler", ...args], {
     cwd: API_DIR,
     stdio: silent ? ["ignore", "pipe", "pipe"] : "inherit",
     encoding: "utf8",
-    env: { ...process.env, CI: "1" },
+    env: { ...process.env, CI: "1", ...akun },
   });
 }
 
@@ -146,7 +148,7 @@ function cmdPush(name) {
   let gagal = null;
   try {
     writeFileSync(berkas, kirim.map((k) => `${k}=${isi[k]}`).join("\n") + "\n", { mode: 0o600 });
-    wrangler(["secret", "bulk", berkas, "--config", config]);
+    wrangler(["secret", "bulk", berkas, "--config", config], { akun: wranglerEnv(profil) });
   } catch (err) {
     gagal = err;
   } finally {
@@ -166,9 +168,10 @@ function cmdPush(name) {
 }
 
 function cmdList(name) {
+  const profil = loadProfile(name);
   const config = configFor(name);
   console.log(`${DIM}Secret yang terpasang (nama saja — nilainya tidak bisa dibaca lagi):${OFF}`);
-  wrangler(["secret", "list", "--config", config]);
+  wrangler(["secret", "list", "--config", config], { akun: wranglerEnv(profil) });
 }
 
 // ─── Entry ────────────────────────────────────────────────────────────────────

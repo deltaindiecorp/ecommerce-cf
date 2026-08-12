@@ -19,7 +19,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { ROOT, loadProfile, profileFromArgv, generatedTomlPath, missingResourceIds } from "./profile.mjs";
+import { ROOT, loadProfile, profileFromArgv, generatedTomlPath, missingResourceIds, wranglerEnv } from "./profile.mjs";
 
 const BLUE = "\x1b[1;34m", RED = "\x1b[1;31m", DIM = "\x1b[2m", OFF = "\x1b[0m";
 const log = (msg) => console.log(`\n${BLUE}==> ${msg}${OFF}`);
@@ -57,6 +57,12 @@ if (missing.length) {
 const config = generatedTomlPath(name);
 if (!existsSync(config)) die(`Config deploy tidak ada. Jalankan:\n\n  ./scripts/setup.sh ${name}`);
 
+// Akun Cloudflare profil ini. Wajib ikut ke SETIAP panggilan wrangler: klien
+// yang punya akun sendiri dan klien yang menumpang akun agency dijalankan dari
+// mesin yang sama, dan tanpa ini yang menentukan sasaran adalah akun yang
+// kebetulan aktif — bukan profil yang sedang di-deploy.
+const AKUN = wranglerEnv(profile);
+
 const apiDir = join(ROOT, "apps", "api");
 const hanya = argv.find((a) => a.startsWith("--only="))?.slice("--only=".length);
 const jalankan = (bagian) => !hanya || hanya === bagian;
@@ -66,6 +72,7 @@ console.log(`  Worker     : ${profile.WORKER_NAME}`);
 console.log(`  Storefront : ${profile.PAGES_STOREFRONT}  → ${profile.STORE_URL}`);
 console.log(`  Admin      : ${profile.PAGES_ADMIN}  → ${profile.ADMIN_URL}`);
 console.log(`  API        : ${profile.API_BASE}`);
+console.log(`  Akun CF    : ${profile.CLOUDFLARE_ACCOUNT_ID || "(akun yang sedang aktif di wrangler)"}`);
 
 // ─── 1. Worker API ────────────────────────────────────────────────────────────
 // check-deploy-config.mjs yang menahan kalau masih ada migrasi tertunda; ia
@@ -75,7 +82,7 @@ if (jalankan("api")) {
   run("node", [join(ROOT, "scripts", "check-deploy-config.mjs"), "--profile", name]);
 
   log(`Deploy Worker: ${profile.WORKER_NAME}`);
-  run("npx", ["wrangler", "deploy", "--config", config], { cwd: apiDir });
+  run("npx", ["wrangler", "deploy", "--config", config], { cwd: apiDir, env: AKUN });
 }
 
 // ─── 2. Pages ─────────────────────────────────────────────────────────────────
@@ -88,7 +95,7 @@ function deployPages(app, projectName, viteEnv) {
   run("npx", ["remix", "vite:build"], { cwd: dir, env: viteEnv });
 
   log(`Deploy Pages: ${projectName}`);
-  run("npx", ["wrangler", "pages", "deploy", "--project-name", projectName, "--commit-dirty=true"], { cwd: dir });
+  run("npx", ["wrangler", "pages", "deploy", "--project-name", projectName, "--commit-dirty=true"], { cwd: dir, env: AKUN });
 }
 
 if (jalankan("storefront")) {

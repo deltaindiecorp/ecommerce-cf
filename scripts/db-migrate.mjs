@@ -27,7 +27,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { generatedTomlPath, listProfiles, profileFromArgv } from "./profile.mjs";
+import { generatedTomlPath, listProfiles, loadProfile, profileFromArgv, wranglerEnv } from "./profile.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const API_DIR = join(ROOT, "apps", "api");
@@ -106,12 +106,18 @@ function wranglerConfig(remote) {
 
 function wrangler(args, { remote, capture = false }) {
   const full = [...args, remote ? "--remote" : "--local", "--config", wranglerConfig(remote)];
+
+  // Dihitung di luar try: kalau profilnya sendiri yang bermasalah, itu bukan
+  // kegagalan wrangler dan tidak boleh dilaporkan sebagai kegagalan wrangler.
+  // Lokal tidak menyentuh akun mana pun, jadi tidak perlu.
+  const akun = remote ? wranglerEnv(loadProfile(CURRENT_PROFILE || profileFromArgv())) : {};
+
   try {
     const out = execFileSync("npx", ["wrangler", ...full], {
       cwd: API_DIR,
       encoding: "utf8",
       stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
-      env: { ...process.env, CI: "1" },
+      env: { ...process.env, CI: "1", ...akun },
     });
     return out ?? "";
   } catch (err) {
