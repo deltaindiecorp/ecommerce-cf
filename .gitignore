@@ -17,9 +17,7 @@ wrangler.generated.toml
 wrangler.*.generated.toml
 
 # Profil deployment: satu berkas per klien, berisi domain dan ID resource-nya.
+# Pola yang sama menutup deployments/<profil>.secrets.env.
 # example.env justru HARUS ikut — itu dokumentasinya.
 deployments/*.env
 !deployments/example.env
-
-# Nilai VITE_* per klien untuk build Pages, dihasilkan scripts/deploy.mjs.
-apps/*/.env.deploy

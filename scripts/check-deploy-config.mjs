@@ -1,21 +1,16 @@
 #!/usr/bin/env node
 // Penjaga sebelum `wrangler deploy` pada Worker API.
 //
-// Deploy memakai wrangler.generated.toml (hasil scripts/setup.sh), bukan
-// wrangler.toml yang masih berisi placeholder. Tanpa penjaga ini, deploy dari
-// clone yang belum di-setup akan lolos dengan binding menunjuk ID palsu —
+// Deploy memakai wrangler.<profil>.generated.toml (hasil scripts/setup.sh),
+// bukan wrangler.toml yang masih berisi placeholder. Tanpa penjaga ini, deploy
+// dari profil yang belum di-setup akan lolos dengan binding menunjuk ID palsu —
 // gagalnya baru terasa saat request pertama menyentuh D1.
 
-import { existsSync, statSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 
 import { pendingMigrations } from "./db-migrate.mjs";
+import { readStamp, templateHash } from "./gen-wrangler.mjs";
 import { generatedTomlPath, listProfiles, profileFromArgv } from "./profile.mjs";
-
-const here     = dirname(fileURLToPath(import.meta.url));
-const apiDir   = resolve(here, "../apps/api");
-const template = resolve(apiDir, "wrangler.toml");
 
 const die = (msg) => { console.error(`\n\x1b[1;31mDeploy dibatalkan\x1b[0m\n${msg}\n`); process.exit(1); };
 
@@ -40,13 +35,30 @@ if (!existsSync(generated)) {
   );
 }
 
-// Template yang lebih baru berarti ada perubahan binding/config yang belum
-// tercermin — misalnya setelah menarik perbaikan dari repo template.
-if (statSync(template).mtimeMs > statSync(generated).mtimeMs) {
+// Isi template yang berbeda berarti ada perubahan binding/config yang belum
+// tercermin di config deployment ini — misalnya setelah menarik perbaikan dari
+// template. Yang dibandingkan isinya, bukan mtime: mtime ikut berubah setiap
+// `git checkout` walau isinya sama, dan pada repo yang melayani banyak profil
+// itu memblokir deploy tanpa ada yang benar-benar berubah.
+const stamp = readStamp(generated);
+const sekarang = templateHash();
+
+if (!stamp) {
   die(
-    `apps/api/wrangler.toml lebih baru daripada wrangler.${profile}.generated.toml.\n\n` +
-    "Kemungkinan ada binding atau konfigurasi baru dari template yang belum\n" +
-    "masuk ke config deployment ini. Render ulang:\n\n" +
+    `wrangler.${profile}.generated.toml tidak punya sidik jari template.\n\n` +
+    "Berkas itu dirender oleh versi script yang lebih lama, jadi tidak bisa\n" +
+    "dipastikan masih cocok dengan apps/api/wrangler.toml sekarang. Render ulang:\n\n" +
+    `  node scripts/gen-wrangler.mjs --profile ${profile}\n`,
+  );
+}
+
+if (stamp !== sekarang) {
+  die(
+    `apps/api/wrangler.toml sudah berubah sejak wrangler.${profile}.generated.toml dirender.\n\n` +
+    `  template sekarang : ${sekarang.slice(0, 12)}…\n` +
+    `  dipakai saat render: ${stamp.slice(0, 12)}…\n\n` +
+    "Ada binding atau konfigurasi baru yang belum masuk ke config deployment ini.\n" +
+    "Render ulang:\n\n" +
     `  node scripts/gen-wrangler.mjs --profile ${profile}\n`,
   );
 }

@@ -1,8 +1,10 @@
 # Konfigurasi Cloudflare Pages untuk panel admin.
 #
-# `name` = nama project Pages. Ganti per klien saat deploy, sama seperti `name`
-# di apps/api/wrangler.toml. Tanpa file ini, `wrangler pages deploy` menanyakan
-# nama project secara interaktif dan gagal di CI.
+# `name` JANGAN diedit per klien. scripts/deploy.mjs mengoper --project-name dari
+# profil (`<profil>-admin`), dan flag itu menang atas nilai di sini — jadi berkas
+# ini tetap sama untuk semua klien. Nilai di bawah hanya cadangan untuk
+# `wrangler pages deploy` manual tanpa profil; tanpa berkas ini wrangler
+# menanyakan nama project secara interaktif dan gagal di CI.
 #
 # `pages_build_output_dir` menunjuk hasil `remix vite:build`. Aset statis ada di
 # build/client, sedangkan build/server dipakai oleh functions/[[path]].ts.

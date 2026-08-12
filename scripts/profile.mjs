@@ -37,6 +37,10 @@ export function listProfiles() {
   return readdirSync(DEPLOYMENTS_DIR)
     .filter((f) => f.endsWith(".env") && f !== "example.env")
     .map((f) => f.replace(/\.env$/, ""))
+    // Berkas pendamping seperti meadza.secrets.env juga berakhiran .env, dan
+    // tanpa saringan ini ia ikut terbaca sebagai profil bernama "meadza.secrets"
+    // — yang lalu muncul di daftar dan ikut kena rollout.
+    .filter((n) => NAME_RE.test(n))
     .sort();
 }
 

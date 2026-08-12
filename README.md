@@ -60,15 +60,17 @@ ecommerce-cf/
 │   │   │   └── orders.ts     # orders, order_items, payments, shipments
 │   │   └── migrations/   # SQL hasil drizzle-kit generate
 │   └── shared/           # Types, validators (Zod), constants
-├── deployments/          # Satu berkas .env per klien — GITIGNORED
+├── deployments/          # Per klien: <profil>.env + <profil>.secrets.env — GITIGNORED
 │   └── example.env       #   kecuali ini: dokumentasi formatnya
 └── scripts/
     ├── profile.mjs       # Definisi profil deployment + penurunan nama resource
     ├── setup.sh          # Provisioning Cloudflare untuk satu profil
     ├── gen-wrangler.mjs  # wrangler.toml + profil → config deploy
+    ├── secrets.mjs       # Secret satu profil, diunggah sekaligus
     ├── db-migrate.mjs    # Satu-satunya jalur migrasi D1
     ├── check-deploy-config.mjs  # Penjaga sebelum deploy
-    └── deploy.mjs        # Deploy berurutan: migrasi → Worker → Pages
+    ├── deploy.mjs        # Deploy satu klien: Worker → Pages
+    └── rollout.mjs       # Deploy perbaikan yang sama ke semua klien
 ```
 
 ## Dev Lokal
@@ -110,13 +112,12 @@ npx wrangler login
 # 4. Jalankan lagi — provisioning D1, 3x KV, R2, 2x Queue, lalu migrasi
 ./scripts/setup.sh meadza
 
-# 5. Isi secret (daftar lengkapnya dicetak di akhir langkah 4)
-cd apps/api
-npx wrangler secret put JWT_SECRET --config wrangler.meadza.generated.toml
-# … dst
-cd ../..
+# 5. Isi secret — sekali di satu berkas, lalu unggah sekaligus
+pnpm secrets scaffold --profile meadza
+$EDITOR deployments/meadza.secrets.env
+pnpm secrets push --profile meadza
 
-# 6. Deploy: migrasi → Worker → Pages storefront & admin
+# 6. Deploy: migrasi diperiksa → Worker → Pages storefront & admin
 pnpm run deploy:client meadza
 ```
 
@@ -129,6 +130,23 @@ pnpm run deploy:client larizq
 pnpm run profiles          # daftar profil yang ada
 ```
 
+### Merilis perbaikan ke semua klien
+
+Satu perbaikan di template harus sampai ke setiap klien — dan yang terlewat
+tidak kelihatan, klien itu hanya tetap berjalan di versi lama:
+
+```bash
+pnpm rollout                          # semua profil, berurutan
+pnpm rollout --dry-run                # lihat rencananya dulu
+pnpm rollout --profiles=meadza,larizq # sebagian saja
+pnpm rollout --only=admin             # bagian tertentu saja
+```
+
+Semua profil diperiksa lebih dulu — kalau ada satu yang belum siap, tidak ada
+satu pun yang di-deploy. Config tiap profil dirender ulang dari template terbaru,
+migrasi D1 dijalankan sebelum Worker-nya naik, dan kegagalan menghentikan sisanya
+(`--keep-going` untuk memaksa lanjut).
+
 Beberapa catatan yang menghemat waktu:
 
 - **Storefront dan admin dibangun ulang per klien.** `VITE_API_BASE` dibakar
@@ -137,10 +155,11 @@ Beberapa catatan yang menghemat waktu:
 - **Urutannya dijaga**, bukan diserahkan ke kebiasaan: migrasi dulu, baru
   Worker, baru Pages. Lihat bagian Migrasi Database di bawah.
 - **Deploy sebagian**: `pnpm run deploy:client meadza --only=admin`
-- **deployments/`<profil>`.env tidak ada di git.** Simpan cadangannya sendiri —
-  berkas itulah yang menghubungkan repo ini dengan resource Cloudflare klien
-  tersebut. Kehilangan berkas itu berarti mencari ID-nya lagi satu per satu
-  lewat dashboard.
+- **deployments/`<profil>`.env dan `<profil>`.secrets.env tidak ada di git.**
+  Simpan cadangannya sendiri — berkas pertama yang menghubungkan repo ini dengan
+  resource Cloudflare klien tersebut, dan kehilangannya berarti mencari ID-nya
+  lagi satu per satu lewat dashboard. Yang kedua berisi API key; simpan di
+  password manager, bukan di folder yang ikut ter-backup ke mana-mana.
 
 ## Migrasi Database
 

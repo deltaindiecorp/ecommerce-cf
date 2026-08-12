@@ -7,6 +7,7 @@
 // untuk `wrangler dev` lokal. Kalau isinya penuh placeholder, dev lokal ikut
 // rusak demi kerapian deploy.
 
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,28 @@ import {
 } from "./profile.mjs";
 
 const TEMPLATE = join(API_DIR, "wrangler.toml");
+
+// ─── Sidik jari template ──────────────────────────────────────────────────────
+// Ditulis ke header hasil render supaya penjaga deploy bisa menjawab pertanyaan
+// yang sebenarnya: "config ini dirender dari template yang MANA?".
+//
+// Sebelumnya pertanyaannya dijawab dengan membandingkan mtime, yang menjawab hal
+// lain: berkas mana yang lebih baru. Dua-duanya meleset. `git checkout` menyegarkan
+// mtime wrangler.toml walau isinya sama persis, sehingga penjaga menolak deploy
+// tanpa ada yang benar-benar berubah — dan pada repo yang dipakai banyak klien itu
+// terjadi setiap kali menarik perbaikan, untuk setiap profil.
+export const STAMP = "template-sha256";
+
+export function templateHash(text) {
+  return createHash("sha256").update(text ?? readFileSync(TEMPLATE, "utf8")).digest("hex");
+}
+
+// null = berkasnya dari versi sebelum stempel ada; itu dibedakan dari "tidak cocok"
+// supaya pesannya bisa menyebut sebab yang tepat.
+export function readStamp(path) {
+  if (!existsSync(path)) return null;
+  return readFileSync(path, "utf8").match(new RegExp(`^#\\s*${STAMP}:\\s*([0-9a-f]{64})`, "m"))?.[1] ?? null;
+}
 
 // Nilai TOML ditulis sebagai string kutip ganda; yang perlu dijaga hanya
 // backslash dan kutip. Nilai profil di sini berupa nama resource dan URL.
@@ -108,6 +131,7 @@ export function generate(name) {
   const p = loadProfile(name);
   if (!existsSync(TEMPLATE)) throw new Error(`Template tidak ada: ${TEMPLATE}`);
 
+  const templateText = readFileSync(TEMPLATE, "utf8");
   const header = [
     `# DIHASILKAN OLEH scripts/gen-wrangler.mjs untuk profil "${name}" — JANGAN di-commit.`,
     "# Berisi ID resource Cloudflare milik deployment ini.",
@@ -115,11 +139,12 @@ export function generate(name) {
     "# Jalankan ulang kalau salah satunya berubah:",
     `#   node scripts/gen-wrangler.mjs --profile ${name}`,
     `#`,
+    `# ${STAMP}: ${templateHash(templateText)}`,
     `# Dihasilkan: ${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC`,
     "",
   ].join("\n");
 
-  const body = renderConfig(readFileSync(TEMPLATE, "utf8"), p);
+  const body = renderConfig(templateText, p);
   const target = generatedTomlPath(name);
   writeFileSync(target, header + body);
   return { target, profile: p, missing: missingResourceIds(p) };

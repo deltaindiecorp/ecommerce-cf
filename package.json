@@ -18,6 +18,8 @@
     "db:baseline": "node scripts/db-migrate.mjs baseline --local",
     "db:baseline:remote": "node scripts/db-migrate.mjs baseline --remote",
     "deploy:client": "node scripts/deploy.mjs",
+    "rollout": "node scripts/rollout.mjs",
+    "secrets": "node scripts/secrets.mjs",
     "profiles": "node scripts/profile.mjs list"
   },
   "devDependencies": {

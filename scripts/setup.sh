@@ -54,7 +54,13 @@ fi
 
 # Satu-satunya definisi penurunan nama ada di profile.mjs; bash memakainya
 # lewat eval supaya keduanya tidak pernah drift.
-eval "$(node "$SCRIPT_DIR/profile.mjs" print "$PROFILE")" || fail "Profil tidak lengkap — lihat pesan di atas"
+#
+# Keluarannya ditampung dulu, baru di-eval: pada `eval "$(cmd)" || fail`, status
+# keluar yang diperiksa adalah milik eval, bukan cmd — perintah yang gagal
+# menghasilkan `eval ""` yang sukses, dan kegagalannya baru muncul jauh di bawah
+# sebagai "unbound variable".
+PROFILE_VARS="$(node "$SCRIPT_DIR/profile.mjs" print "$PROFILE")" || fail "Profil tidak lengkap — lihat pesan di atas"
+eval "$PROFILE_VARS"
 
 log "Cek autentikasi wrangler"
 (cd "$API_DIR" && npx wrangler whoami) || fail "Belum login. Jalankan: npx wrangler login"
@@ -156,19 +162,18 @@ log "Menjalankan migration D1 (remote)"
 log "Selesai — resource Cloudflare untuk \"$PROFILE\" siap"
 cat <<EOF
 
-Secret masih harus diisi manual (butuh API key asli tiap provider). Semuanya
-melekat pada Worker "$WORKER_NAME", jadi --config wajib ikut:
+Secret masih butuh API key asli tiap provider, jadi diisi manual — tapi sekali
+di satu berkas, bukan satu per satu lewat prompt:
 
-  cd apps/api
-  for S in JWT_SECRET MIDTRANS_SERVER_KEY MIDTRANS_CLIENT_KEY XENDIT_SECRET_KEY \\
-           XENDIT_WEBHOOK_TOKEN RAJAONGKIR_API_KEY BINDERBYTE_API_KEY RESEND_API_KEY; do
-    npx wrangler secret put \$S --config wrangler.$PROFILE.generated.toml
-  done
+  node scripts/secrets.mjs scaffold --profile $PROFILE   # buat kerangkanya
+  \$EDITOR deployments/$PROFILE.secrets.env               # isi nilainya
+  node scripts/secrets.mjs push --profile $PROFILE       # unggah sekaligus
 
-  # Sementara — kosongkan lagi setelah admin pertama dibuat:
-  npx wrangler secret put ADMIN_BOOTSTRAP_SECRET --config wrangler.$PROFILE.generated.toml
+Isi juga ADMIN_BOOTSTRAP_SECRET di berkas yang sama (barisnya masih dikomentari)
+kalau admin pertama belum ada — dan hapus lagi setelah admin dibuat.
 
-Lalu deploy (migrasi dijalankan lebih dulu secara otomatis):
+Lalu deploy (config & migrasi tertunda diperiksa dulu, deploy dibatalkan kalau
+ada yang belum beres):
 
   pnpm deploy:client $PROFILE
 
