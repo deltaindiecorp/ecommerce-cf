@@ -91,17 +91,52 @@ pnpm dev
 pnpm deploy
 ```
 
-Untuk dev lokal tanpa resource Cloudflare asli (D1/KV/R2/Queues disimulasikan lewat Miniflare), cukup jalankan migrasi ke database lokal lalu `pnpm dev`:
+Untuk dev lokal tanpa resource Cloudflare asli (D1/KV/R2/Queues disimulasikan lewat Miniflare):
 
 ```bash
-cd apps/api
-for f in ../../packages/db/migrations/*.sql; do
-  npx wrangler d1 execute ecommerce-db --local --file="$f"
-done
-cp .dev.vars.example .dev.vars   # isi JWT_SECRET & ADMIN_BOOTSTRAP_SECRET buat dev
-cd ../..
+pnpm db:migrate                          # migrasi ke D1 lokal
+cp apps/api/.dev.vars.example apps/api/.dev.vars   # isi JWT_SECRET & ADMIN_BOOTSTRAP_SECRET
 pnpm dev
 ```
+
+## Migrasi Database
+
+Semua migrasi lewat satu perintah dan tercatat di tabel `d1_migrations`, jadi
+yang sudah dijalankan tidak akan terulang:
+
+```bash
+pnpm db:status           # apa yang sudah & belum diterapkan (lokal)
+pnpm db:migrate          # jalankan yang belum (lokal)
+
+pnpm db:status:remote    # sama, untuk D1 di Cloudflare
+pnpm db:migrate:remote
+```
+
+Mengubah schema di `packages/db/src/schema/` → `pnpm db:generate` untuk membuat
+SQL migrasinya, lalu commit hasilnya.
+
+**Migrasi dijalankan sebelum deploy Worker, bukan sesudah.** `pnpm deploy` akan
+menolak jalan selama masih ada migrasi tertunda. Urutan ini bukan selera:
+migrasi `0004` menyalin `qty_available` ke `qty_on_hand` sebelum menjatuhkan
+kolom lamanya — kalau Worker versi baru sudah menulis duluan, angka-angka itu
+ditimpa data basi tanpa error apa pun.
+
+### Database yang sudah ada sebelum ada pelacakan
+
+Kalau database ini pernah dimigrasi ketika repo belum punya pelacakan, ia berisi
+tabel tapi tidak punya `d1_migrations`. Menjalankan `db:migrate` di situ akan
+mengulang dari `0000` dan gagal di tabel yang sudah ada — jadi perintahnya
+menolak, dan menyuruh mengadopsi dulu:
+
+```bash
+pnpm db:baseline              # baca skema, simpulkan sudah sampai mana (belum menulis)
+pnpm db:baseline -- --write   # tulis catatannya
+pnpm db:migrate               # lanjutkan sisanya
+```
+
+`baseline` tidak menjalankan ulang SQL apa pun — ia hanya mencatat apa yang
+sudah ada. Cukup sekali per database. Ganti ke `db:baseline:remote` untuk D1 di
+Cloudflare.
 
 ## Migration Path ke Neon PostgreSQL
 
@@ -111,7 +146,8 @@ Ketika traffic sudah besar dan butuh concurrent writes lebih kuat:
 2. Di `packages/db/src/client.ts`: uncomment blok Neon, comment blok D1
 3. Di `apps/api/wrangler.toml`: uncomment `[[hyperdrive]]`
 4. Ganti `createD1Client(c.env.DB)` → `createNeonClient(c.env.HYPERDRIVE.connectionString)` di semua routes
-5. Run `pnpm db:generate && pnpm db:migrate`
+5. Run `pnpm db:generate`, lalu terapkan lewat `drizzle-kit migrate` — `pnpm db:migrate`
+   di repo ini khusus D1 (lewat wrangler) dan tidak berlaku untuk Postgres
 
 Schema Drizzle **tidak perlu diubah** — hanya dialect yang berbeda.
 

@@ -8,8 +8,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-API_DIR="$SCRIPT_DIR/../apps/api"
-DB_DIR="$SCRIPT_DIR/../packages/db"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+API_DIR="$ROOT_DIR/apps/api"
 WRANGLER_TOML="$API_DIR/wrangler.toml"
 # Hasil provisioning ditulis ke berkas TERPISAH yang gitignored, bukan menimpa
 # wrangler.toml. Versi lama menimpanya langsung, sehingga setiap clone klien
@@ -96,11 +96,13 @@ if grep -q "YOUR_[A-Z_]*_ID" "$GENERATED_TOML"; then
   fail "Masih ada placeholder yang belum terisi di $(basename "$GENERATED_TOML") — lihat baris di atas"
 fi
 
+# Lewat db-migrate.mjs, bukan loop `d1 execute` atas semua berkas seperti dulu.
+# Loop itu benar tepat sekali — di database yang baru dibuat. Sesudahnya ia tidak
+# punya cara tahu mana yang sudah dijalankan, jadi menjalankan setup.sh lagi
+# (atau menerapkan migrasi baru) berakhir di "duplicate column name" dan berhenti
+# separuh jalan. Sekarang tercatat di tabel d1_migrations.
 log "Menjalankan migration D1 (remote)"
-for f in "$DB_DIR"/migrations/*.sql; do
-  echo "  -> $(basename "$f")"
-  (cd "$API_DIR" && npx wrangler d1 execute "$DB_NAME" --remote --config "$GENERATED_TOML" --file="$f")
-done
+(cd "$ROOT_DIR" && node scripts/db-migrate.mjs apply --remote)
 
 log "Selesai — resource Cloudflare siap"
 cat <<EOF

@@ -39,8 +39,15 @@ lihat bagian "Quick Start" di [README.md](README.md).
   fokus ke logic murni (validator, kalkulasi, dll.) — bukan route handler
   yang butuh mock D1/KV/Durable Object
 - **Migration DB**: kalau mengubah schema di `packages/db/src/schema/`,
-  jalankan `cd packages/db && pnpm db:generate` untuk generate migration SQL
-  baru, commit hasilnya juga
+  jalankan `pnpm db:generate` untuk generate migration SQL baru, commit
+  hasilnya juga, lalu `pnpm db:migrate` untuk menerapkannya ke D1 lokal.
+  Jangan menjalankan `wrangler d1 execute --file` langsung — migrasi dilacak
+  di tabel `d1_migrations`, dan menerapkan di luar jalur itu membuat
+  catatannya tidak lagi cocok dengan isi database. Lihat bagian "Migrasi
+  Database" di [README.md](README.md).
+- **Jangan mengubah migration yang sudah di-commit** — ia mungkin sudah jalan
+  di database orang lain, dan pelacakan hanya menyimpan namanya, bukan isinya.
+  Perubahan berikutnya masuk sebagai migration baru.
 
 ## Struktur Monorepo
 

@@ -8,6 +8,10 @@ compatibility_flags = ["nodejs_compat"]
 binding      = "DB"
 database_name = "ecommerce-db"
 database_id  = "YOUR_D1_DATABASE_ID"
+# Schema-nya hidup di packages/db, bukan di sini. Tanpa baris ini
+# `wrangler d1 migrations` mencari ./migrations relatif ke berkas ini dan tidak
+# menemukan apa pun. Lihat scripts/db-migrate.mjs.
+migrations_dir = "../../packages/db/migrations"
 
 # ─── KV Namespaces ────────────────────────────────────────────────────────────
 [[kv_namespaces]]

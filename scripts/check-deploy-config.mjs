@@ -10,6 +10,8 @@ import { existsSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { pendingMigrations } from "./db-migrate.mjs";
+
 const here      = dirname(fileURLToPath(import.meta.url));
 const apiDir    = resolve(here, "../apps/api");
 const template  = resolve(apiDir, "wrangler.toml");
@@ -38,3 +40,40 @@ if (statSync(template).mtimeMs > statSync(generated).mtimeMs) {
 }
 
 console.log("✓ wrangler.generated.toml siap dipakai deploy");
+
+// ─── Migrasi harus lebih dulu ─────────────────────────────────────────────────
+// Urutannya bukan selera. Migrasi 0004 menjalankan
+// `UPDATE inventory SET qty_on_hand = qty_available` sebelum menjatuhkan
+// qty_available. Kalau Worker baru naik lebih dulu, ia mulai menulis ke
+// qty_on_hand, lalu migrasi menimpa angka-angka itu dengan isi qty_available
+// yang sudah basi — stok tercatat salah tanpa error apa pun.
+//
+// Arah sebaliknya hanya menyisakan jendela pendek saat Worker lama bertemu skema
+// baru dan gagal terang-terangan. Itu jauh lebih baik daripada rusak diam-diam.
+if (process.env.SKIP_MIGRATION_CHECK === "1") {
+  console.log("⚠ Pemeriksaan migrasi dilewati (SKIP_MIGRATION_CHECK=1)");
+} else {
+  let pending = null; // null = tidak terbaca, bukan "tidak ada"
+  try {
+    pending = pendingMigrations(true);
+  } catch (err) {
+    // Tidak bisa dibaca ≠ aman. Tapi juga bukan alasan memblokir deploy yang
+    // mungkin sah — jadi diperingatkan, bukan dihentikan. Yang penting: JANGAN
+    // mencetak tanda centang sesudah ini, karena tidak ada yang terverifikasi.
+    const alasan = String(err.message).split("\n")[0].replace(/^Command failed: .*/, "wrangler gagal dijalankan");
+    console.warn(`⚠ Status migrasi remote tidak terbaca: ${alasan}`);
+    console.warn("  Deploy diteruskan, tapi pastikan sendiri `pnpm db:status:remote` bersih.");
+  }
+
+  if (pending && pending.length > 0) {
+    die(
+      `Ada ${pending.length} migrasi yang belum diterapkan ke D1 remote:\n\n` +
+      pending.map((n) => `  · ${n}`).join("\n") +
+      "\n\nJalankan migrasinya DULU, baru deploy Worker:\n\n" +
+      "  pnpm db:migrate:remote\n\n" +
+      "Urutan ini penting — deploy duluan bisa membuat migrasi menimpa data yang\n" +
+      "baru ditulis Worker. Kalau kamu yakin ingin melewatinya: SKIP_MIGRATION_CHECK=1\n",
+    );
+  }
+  if (pending) console.log("✓ Tidak ada migrasi tertunda di D1 remote");
+}
