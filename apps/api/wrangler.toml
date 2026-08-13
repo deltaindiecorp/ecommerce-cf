@@ -59,9 +59,20 @@ class_name  = "CartDurableObject"
 name        = "STOCK_LOCK_DO"
 class_name  = "StockLockDurableObject"
 
+# `new_sqlite_classes`, bukan `new_classes`. Cloudflare sudah tidak melayani
+# pembuatan namespace Durable Object berbasis key-value:
+#
+#   Creating new key-value backed Durable Object namespaces is no longer
+#   supported on this account. [code: 10099]
+#
+# Ketahuan saat deploy sungguhan pertama — `wrangler dev` lokal tidak peduli
+# yang mana, jadi ini mustahil terlihat tanpa menyentuh Cloudflare.
+#
+# Aman untuk kedua DO di sini: keduanya cuma memakai storage.get/put/delete,
+# yang didukung penuh oleh backing SQLite.
 [[migrations]]
 tag = "v1"
-new_classes = ["CartDurableObject", "StockLockDurableObject"]
+new_sqlite_classes = ["CartDurableObject", "StockLockDurableObject"]
 
 # ─── Cron Triggers ────────────────────────────────────────────────────────────
 [triggers]

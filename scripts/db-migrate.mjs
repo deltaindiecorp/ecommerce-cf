@@ -110,7 +110,14 @@ function wrangler(args, { remote, capture = false }) {
   // Dihitung di luar try: kalau profilnya sendiri yang bermasalah, itu bukan
   // kegagalan wrangler dan tidak boleh dilaporkan sebagai kegagalan wrangler.
   // Lokal tidak menyentuh akun mana pun, jadi tidak perlu.
-  const akun = remote ? wranglerEnv(loadProfile(CURRENT_PROFILE || profileFromArgv())) : {};
+  let akun = {};
+  if (remote) {
+    try {
+      akun = wranglerEnv(loadProfile(CURRENT_PROFILE || profileFromArgv()));
+    } catch (err) {
+      fail(err.message); // pesannya sudah menjelaskan; jangan jadi stack trace
+    }
+  }
 
   try {
     const out = execFileSync("npx", ["wrangler", ...full], {

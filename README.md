@@ -116,7 +116,7 @@ npx wrangler login
 # 3. Isi domain di deployments/meadza.env
 #    STORE_URL, ADMIN_URL, API_BASE, EMAIL_FROM_NAME, EMAIL_FROM_ADDRESS
 
-# 4. Jalankan lagi — provisioning D1, 3x KV, R2, 2x Queue, lalu migrasi
+# 4. Jalankan lagi — provisioning D1, 3x KV, R2, 2x Queue, 2x Pages, lalu migrasi
 ./scripts/setup.sh meadza
 
 # 5. Isi secret — sekali di satu berkas, lalu unggah sekaligus

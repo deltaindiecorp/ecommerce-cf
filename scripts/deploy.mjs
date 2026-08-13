@@ -94,8 +94,16 @@ function deployPages(app, projectName, viteEnv) {
   log(`Build ${app} (VITE_API_BASE=${viteEnv.VITE_API_BASE})`);
   run("npx", ["remix", "vite:build"], { cwd: dir, env: viteEnv });
 
-  log(`Deploy Pages: ${projectName}`);
-  run("npx", ["wrangler", "pages", "deploy", "--project-name", projectName, "--commit-dirty=true"], { cwd: dir, env: AKUN });
+  // --branch wajib disebut: tanpa itu wrangler memakai nama branch git yang
+  // sedang aktif, dan deployment dari branch mana pun selain production_branch
+  // mendarat sebagai preview — domain klien tidak berubah, tanpa satu pun error.
+  log(`Deploy Pages: ${projectName} (branch ${profile.PAGES_BRANCH})`);
+  run("npx", [
+    "wrangler", "pages", "deploy",
+    "--project-name", projectName,
+    "--branch", profile.PAGES_BRANCH,
+    "--commit-dirty=true",
+  ], { cwd: dir, env: AKUN });
 }
 
 if (jalankan("storefront")) {
@@ -116,6 +124,15 @@ Cek cepat:
   curl ${profile.API_BASE}/
   buka ${profile.STORE_URL} dan ${profile.ADMIN_URL}
 
-Kalau domain kustom belum diarahkan, Pages memakai
-${profile.PAGES_STOREFRONT}.pages.dev dan ${profile.PAGES_ADMIN}.pages.dev.`);
+Kalau domain kustom belum diarahkan, Pages memberi domain *.pages.dev dengan
+sufiks acak (mis. ${profile.PAGES_STOREFRONT}-a1b.pages.dev) — bukan persis nama
+project. Lihat URL sebenarnya di keluaran deploy di atas, lalu samakan STORE_URL
+dan ADMIN_URL di deployments/${name}.env dengan URL itu.
+
+Selama belum sama, CORS_ORIGINS menunjuk alamat yang tidak ada dan browser
+memblokir setiap panggilan API dari kedua halaman — tanpa error yang jelas.
+Sesudah menyamakannya:
+
+  node scripts/gen-wrangler.mjs --profile ${name}
+  pnpm run deploy:client ${name} --only=api`);
 }

@@ -138,21 +138,33 @@ kv_id_for() {
     });' "$1" || true
 }
 
-declare -A KV_IDS
-for BINDING in CART_KV SESSION_KV CACHE_KV; do
-  log "KV namespace: $BINDING"
-  EXISTING=$(kv_id_for "${WORKER_NAME}-${BINDING}")
-  if [ -n "$EXISTING" ]; then
-    warn "sudah ada, dipakai kembali ($EXISTING)"
-    KV_IDS[$BINDING]="$EXISTING"
-  else
-    OUT=$(wr kv namespace create "$BINDING" 2>&1) || { echo "$OUT"; fail "Gagal membuat KV namespace $BINDING"; }
-    echo "$OUT"
-    ID=$(echo "$OUT" | grep -m1 -E '^\s*id\s*=' | sed -E 's/.*"(.*)".*/\1/')
-    [ -n "$ID" ] || fail "Tidak berhasil membaca id KV $BINDING dari output di atas"
-    KV_IDS[$BINDING]="$ID"
+# Tiga variabel terpisah, bukan associative array: `declare -A` butuh bash 4,
+# sedangkan macOS masih mengirim bash 3.2 — dan di situlah script ini paling
+# sering dijalankan pertama kali.
+#
+# Log fungsi ini pergi ke stderr supaya stdout-nya hanya berisi ID, yang lalu
+# ditangkap pemanggil lewat $( ).
+ensure_kv() {
+  local binding="$1" existing out id
+  log "KV namespace: $binding" >&2
+
+  existing=$(kv_id_for "${WORKER_NAME}-${binding}")
+  if [ -n "$existing" ]; then
+    warn "sudah ada, dipakai kembali ($existing)" >&2
+    printf '%s' "$existing"
+    return 0
   fi
-done
+
+  out=$(wr kv namespace create "$binding" 2>&1) || { echo "$out" >&2; fail "Gagal membuat KV namespace $binding"; }
+  echo "$out" >&2
+  id=$(echo "$out" | grep -m1 -E '^[[:space:]]*id[[:space:]]*=' | sed -E 's/.*"(.*)".*/\1/')
+  [ -n "$id" ] || fail "Tidak berhasil membaca id KV $binding dari output di atas"
+  printf '%s' "$id"
+}
+
+CART_KV_ID=$(ensure_kv CART_KV)
+SESSION_KV_ID=$(ensure_kv SESSION_KV)
+CACHE_KV_ID=$(ensure_kv CACHE_KV)
 
 # ─── R2 & Queues ──────────────────────────────────────────────────────────────
 # Keduanya diidentifikasi lewat nama, bukan ID, jadi "sudah ada" cukup dilewati.
@@ -170,13 +182,49 @@ for Q in "$QUEUE_NOTIFICATION" "$QUEUE_RESI"; do
   fi
 done
 
+# ─── Pages projects ───────────────────────────────────────────────────────────
+# Dibuat di sini, bukan dibiarkan lahir saat deploy pertama. `wrangler pages
+# deploy` pada project yang belum ada punya dua perilaku, dan dua-duanya buruk
+# untuk alur terscript: di terminal ia menyela dengan pertanyaan (termasuk nama
+# production branch, yang bawaannya nama branch git yang sedang aktif — bukan
+# yang kita mau), dan tanpa TTY ia melewati pembuatan lalu gagal jauh di
+# belakang saat unggahan menyentuh project yang tidak ada.
+#
+# Perintah pages tidak menerima --config, jadi tidak lewat wr(). Sasaran akunnya
+# tetap benar karena CLOUDFLARE_ACCOUNT_ID sudah diekspor di atas.
+buat_pages_project() {
+  local NAMA="$1" APP="$2"
+  local APP_TOML="$ROOT_DIR/apps/$APP/wrangler.toml"
+  local CD FLAGS OUT
+
+  # Diambil dari wrangler.toml app-nya supaya tidak ada tanggal/flag kembar yang
+  # bisa menyimpang dari yang dipakai saat build.
+  CD=$(grep -m1 '^compatibility_date' "$APP_TOML" | sed -E 's/.*"(.*)".*/\1/')
+  FLAGS=$(grep -m1 '^compatibility_flags' "$APP_TOML" | sed -E 's/.*\[(.*)\].*/\1/' | tr -d '" ' | tr ',' ' ')
+
+  log "Pages project: $NAMA (production branch: $PAGES_BRANCH)"
+  # shellcheck disable=SC2086
+  if OUT=$(cd "$ROOT_DIR/apps/$APP" && npx wrangler pages project create "$NAMA" \
+             --production-branch "$PAGES_BRANCH" \
+             ${CD:+--compatibility-date "$CD"} \
+             ${FLAGS:+--compatibility-flags $FLAGS} 2>&1); then
+    echo "$OUT"
+  else
+    echo "$OUT" | grep -qi "already\|exists\|8000009" || { echo "$OUT"; fail "Gagal membuat Pages project $NAMA"; }
+    warn "sudah ada, dilewati"
+  fi
+}
+
+buat_pages_project "$PAGES_STOREFRONT" storefront
+buat_pages_project "$PAGES_ADMIN" admin
+
 # ─── Simpan ID & render config ────────────────────────────────────────────────
 log "Menyimpan ID resource ke deployments/$PROFILE.env"
 node "$SCRIPT_DIR/profile.mjs" set "$PROFILE" \
   "D1_DATABASE_ID=$D1_ID" \
-  "CART_KV_ID=${KV_IDS[CART_KV]}" \
-  "SESSION_KV_ID=${KV_IDS[SESSION_KV]}" \
-  "CACHE_KV_ID=${KV_IDS[CACHE_KV]}"
+  "CART_KV_ID=$CART_KV_ID" \
+  "SESSION_KV_ID=$SESSION_KV_ID" \
+  "CACHE_KV_ID=$CACHE_KV_ID"
 
 log "Merender apps/api/wrangler.$PROFILE.generated.toml"
 node "$SCRIPT_DIR/gen-wrangler.mjs" --profile "$PROFILE" || fail "Gagal merender config"

@@ -111,6 +111,14 @@ export function resolveProfile(name, raw) {
   p.PAGES_STOREFRONT ??= `${name}-storefront`;
   p.PAGES_ADMIN      ??= `${name}-admin`;
 
+  // Pages menandai tiap deployment dengan nama branch, dan hanya yang cocok
+  // dengan production_branch project yang menjadi deployment PRODUKSI. Tanpa
+  // nilai tetap di sini, `wrangler pages deploy` memakai nama branch git yang
+  // kebetulan aktif — deploy dari branch fitur diam-diam mendarat sebagai
+  // preview, domain klien tidak berubah, dan perintahnya tetap melaporkan
+  // sukses. Nilai yang sama dipakai saat membuat project dan saat deploy.
+  p.PAGES_BRANCH ??= "main";
+
   const kurang = REQUIRED.filter((k) => !p[k]);
   if (kurang.length) {
     throw new Error(

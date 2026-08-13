@@ -111,8 +111,8 @@ produksi ditolak API-nya sendiri.
 ```
 
 Jalan kedua memastikan dulu akun Cloudflare mana yang dipakai (lihat catatan di
-Prasyarat), lalu membuat: 1 D1 database, 3 KV namespace, 1 R2 bucket, 2 Queue —
-semuanya berawalan `meadza-`. ID hasilnya ditulis balik ke
+Prasyarat), lalu membuat: 1 D1 database, 3 KV namespace, 1 R2 bucket, 2 Queue,
+dan 2 Pages project — semuanya berawalan `meadza-`. ID hasilnya ditulis balik ke
 `deployments/meadza.env`, config deploy dirender ke
 `apps/api/wrangler.meadza.generated.toml`, lalu migrasi database dijalankan.
 
@@ -171,6 +171,36 @@ pnpm run deploy:client meadza
 
 Urutannya dijaga: migrasi D1 diperiksa → Worker API → build & deploy storefront
 → build & deploy admin. Deploy dibatalkan kalau masih ada migrasi tertunda.
+
+### Kalau memakai URL bawaan Cloudflare
+
+Cloudflare **tidak** memberi domain persis `<nama-project>.pages.dev`. Ia
+menambahkan sufiks acak tiga huruf:
+
+| Nama project | Domain yang benar-benar terbit |
+|---|---|
+| `demo-storefront` | `demo-storefront-2gn.pages.dev` |
+| `demo-admin` | `demo-admin-brg.pages.dev` |
+
+Sufiks itu baru diketahui setelah deploy pertama. Selama `STORE_URL` dan
+`ADMIN_URL` di profil belum disamakan dengan URL sebenarnya, `CORS_ORIGINS`
+menunjuk alamat yang tidak ada — dan browser memblokir setiap panggilan API dari
+storefront maupun panel admin, tanpa pesan yang menjelaskan apa pun. Halamannya
+tetap terbuka; yang gagal hanya isinya.
+
+Jadi setelah deploy pertama:
+
+```bash
+# lihat URL sebenarnya
+cd apps/api && npx wrangler pages project list --config wrangler.<profil>.generated.toml
+
+# samakan di deployments/<profil>.env, lalu render ulang & deploy ulang Worker
+node scripts/gen-wrangler.mjs --profile <profil>
+pnpm run deploy:client <profil> --only=api
+```
+
+Persoalan ini hilang begitu memakai domain kustom (Fase 6) — di situ URL-nya
+Anda sendiri yang menentukan.
 
 ### Fase 4 alternatif — kalau API belum punya domain sendiri
 
@@ -395,8 +425,17 @@ ini masih dilayani akun Anda sebelum menjanjikan tanggal live ke klien.**
 
 ## Batas yang perlu diketahui
 
-Per dokumen ini ditulis, **belum ada satu pun deployment sungguhan** dari repo
-ini. Semua verifikasi berjalan di Miniflare lokal. Langkah-langkah di atas
-mengikuti apa yang benar-benar dilakukan script, tapi klien pertama tetap akan
-jadi yang pertama menemukan gesekan di dunia nyata — sisihkan waktu lebih untuk
-itu, dan jangan janjikan tanggal live yang mepet.
+Langkah-langkah di atas sudah dijalankan sungguhan sekali, lewat profil uji
+`demo`. Dua bug hanya ketahuan di situ dan tidak mungkin terlihat dari dev
+lokal:
+
+- `setup.sh` memakai `declare -A`, yang butuh bash 4 — macOS masih mengirim
+  bash 3.2, dan di situlah script ini paling sering dijalankan pertama kali.
+- `wrangler.toml` mendeklarasikan Durable Object dengan `new_classes`.
+  Cloudflare sudah tidak melayani pembuatan namespace berbasis key-value:
+  *"no longer supported on this account [code: 10099]"*. `wrangler dev` lokal
+  tidak peduli yang mana, jadi ini mustahil terlihat tanpa menyentuh Cloudflare.
+
+Keduanya sudah diperbaiki. Yang tetap belum pernah diuji hidup: pembayaran,
+webhook, ongkir, dan email — semuanya butuh API key provider yang asli, jadi
+sisihkan waktu untuk itu dan jangan janjikan tanggal live yang mepet.
