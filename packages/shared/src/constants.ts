@@ -45,6 +45,45 @@ export const KV_TTL = {
   passwordReset: 60 * 30,          // 30 menit — cukup untuk buka email, cukup pendek kalau bocor
 } as const;
 
+// ─── Cakupan Kurir per Provider ───────────────────────────────────────────────
+// RajaOngkir memakai DUA daftar kurir yang berbeda untuk dua endpoint-nya, dan
+// perbedaan itu tidak terlihat dari dokumentasi — hanya dari pesan error HTTP
+// 422/400 yang menyebutkan sendiri kode yang sah.
+//
+// Akibatnya nyata: pembeli bisa memilih SiCepat di checkout (tarifnya ada),
+// membayar, lalu pesanannya tidak pernah bisa dilacak. Cron tetap jalan, tidak
+// ada error, status diam selamanya — dan baru ketahuan saat pembeli bertanya.
+//
+// Karena itu pelacakan dipilih per kurir: yang didukung RajaOngkir dilacak
+// gratis, sisanya jatuh ke Binderbyte yang berbayar (15 credit/cek).
+
+// Kurir yang punya tarif di POST /calculate/domestic-cost.
+export const RAJAONGKIR_COST_COURIERS = [
+  "jne", "sicepat", "ide", "sap", "jnt", "ninja", "tiki", "lion",
+  "anteraja", "pos", "ncs", "rex", "rpx", "sentral", "star", "wahana",
+] as const;
+
+// Kurir yang bisa dilacak di POST /track/waybill. Perhatikan `sicepat` TIDAK
+// ada di sini meski ada di daftar tarif, dan `first` justru sebaliknya.
+export const RAJAONGKIR_TRACK_COURIERS = [
+  "jne", "jnt", "ninja", "tiki", "pos", "anteraja", "sap", "lion",
+  "wahana", "first", "ide",
+] as const;
+
+export type TrackingProvider = "rajaongkir" | "binderbyte";
+
+// Provider mana yang dipakai untuk melacak sebuah kurir.
+//
+// Dipisah jadi fungsi murni supaya bisa diuji tanpa jaringan — ini yang
+// menentukan sebuah pengiriman terlacak gratis, terlacak berbayar, atau tidak
+// terlacak sama sekali.
+export function trackingProviderFor(courier: string | null | undefined): TrackingProvider {
+  const c = String(courier ?? "").trim().toLowerCase();
+  return (RAJAONGKIR_TRACK_COURIERS as readonly string[]).includes(c)
+    ? "rajaongkir"
+    : "binderbyte";
+}
+
 // ─── Jeda Polling Resi ────────────────────────────────────────────────────────
 // Tiap panggilan cek resi ke Binderbyte berbiaya 15 credit (Rp 15). Cron
 // berjalan tiap 30 menit, jadi tanpa jeda per-pengiriman satu kiriman menelan
