@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env } from "../types/env";
 import { KV_KEYS, KV_TTL } from "@repo/shared";
 import { getShippingRates, searchDestinations } from "../services/shipping";
+import { trackWaybill } from "../services/tracking";
 import type { ShippingRate, ResiStatus, CityOption } from "@repo/shared";
 import { createD1Client } from "@repo/db";
 import { shipments, warehouses } from "@repo/db/schema";
@@ -89,7 +90,7 @@ shippingRouter.get("/resi/:no", async (c) => {
   const cached = await c.env.CACHE_KV.get(cacheKey);
   if (cached) return c.json({ success: true, data: JSON.parse(cached), cached: true });
 
-  const status = await fetchBinderbyte(c.env, no, courier);
+  const status = await trackWaybill(c.env, no, courier);
   if (!status)  return c.json({ success: false, error: "Nomor resi tidak ditemukan" }, 404);
 
   await c.env.CACHE_KV.put(cacheKey, JSON.stringify(status), { expirationTtl: KV_TTL.resi });
@@ -114,7 +115,7 @@ shippingRouter.get("/order/:orderId/track", async (c) => {
 
     resiData = cached
       ? JSON.parse(cached)
-      : await fetchBinderbyte(c.env, shipment.trackingNo, shipment.courier);
+      : await trackWaybill(c.env, shipment.trackingNo, shipment.courier);
   }
 
   return c.json({
@@ -135,37 +136,3 @@ shippingRouter.get("/order/:orderId/track", async (c) => {
 // ─── RajaOngkir City List Helper (untuk autocomplete) ─────────────────────────
 
 // ─── Binderbyte Cek Resi Helper ───────────────────────────────────────────────
-async function fetchBinderbyte(
-  env: Env,
-  trackingNo: string,
-  courier?: string
-): Promise<ResiStatus | null> {
-  const params = new URLSearchParams({
-    api_key: env.BINDERBYTE_API_KEY,
-    courier: courier ?? "auto",
-    awb:     trackingNo,
-  });
-
-  const res  = await fetch(`https://api.binderbyte.com/v1/track?${params}`);
-  const json = await res.json() as {
-    status:  number;
-    message: string;
-    data?: {
-      summary: { courier_code: string; status: string; awb_date?: string };
-      history: Array<{ date: string; desc: string; location?: string }>;
-    };
-  };
-
-  if (json.status !== 200 || !json.data) return null;
-
-  return {
-    trackingNo,
-    courier:   json.data.summary.courier_code,
-    status:    json.data.summary.status,
-    history:   json.data.history.map(h => ({
-      date:        h.date,
-      description: h.desc,
-      location:    h.location,
-    })),
-  };
-}

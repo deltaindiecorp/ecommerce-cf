@@ -3,6 +3,7 @@ import { createD1Client } from "@repo/db";
 import { shipments, orders } from "@repo/db/schema";
 import { eq, inArray } from "drizzle-orm";
 import { KV_KEYS, KV_TTL, isResiPollDue } from "@repo/shared";
+import { trackWaybill, isDelivered } from "../services/tracking";
 import { deductOrderStock } from "../services/inventory";
 
 // Dipanggil oleh Cron Trigger */30 * * * *
@@ -77,17 +78,15 @@ export async function processResiPoll(
         status  = c.status;
         history = c.history ?? [];
       } else {
-        const params = new URLSearchParams({
-          api_key: env.BINDERBYTE_API_KEY,
-          courier: courier ?? "auto",
-          awb:     trackingNo,
-        });
-        const res  = await fetch(`https://api.binderbyte.com/v1/track?${params}`);
-        const json = await res.json() as any;
+        // Lewat services/tracking.ts, bukan memanggil Binderbyte langsung.
+        // Sebelumnya poller punya salinan kodenya sendiri yang sudah menyimpang
+        // dari milik rute — dan di sanalah RajaOngkir yang gratis dipilih lebih
+        // dulu untuk kurir yang didukungnya.
+        const hasil = await trackWaybill(env, trackingNo, courier);
 
-        if (json.status !== 200 || !json.data) {
-          // lastChecked tetap disetel supaya resi yang selalu ditolak provider
-          // tidak dipanggil ulang tiap kali cron jalan.
+        if (!hasil) {
+          // lastChecked tetap disetel supaya resi yang belum terdaftar di
+          // sistem kurir tidak dipanggil ulang tiap kali cron jalan.
           await db.update(shipments)
             .set({ lastChecked: new Date(), updatedAt: new Date() })
             .where(eq(shipments.id, shipmentId));
@@ -95,8 +94,8 @@ export async function processResiPoll(
           continue;
         }
 
-        status  = json.data.summary?.status;
-        history = json.data.history ?? [];
+        status  = hasil.status;
+        history = hasil.history.map(h => ({ date: h.date, desc: h.description, location: h.location }));
 
         await env.CACHE_KV.put(
           KV_KEYS.resi(trackingNo),
@@ -105,8 +104,9 @@ export async function processResiPoll(
         );
       }
 
-      const isDelivered = status?.toLowerCase().includes("delivered") ||
-                          status?.toLowerCase().includes("diterima");
+      // Aturan penilaian dipusatkan di services/tracking.ts supaya poller dan
+      // rute tidak pernah menilai "sudah sampai" dengan cara berbeda.
+      const sudahSampai = isDelivered(status);
 
       const lastStatus = history[0]
         ? { description: history[0].desc, date: history[0].date, location: history[0].location }
@@ -117,13 +117,13 @@ export async function processResiPoll(
         .set({
           lastStatus,
           lastChecked: new Date(),
-          ...(isDelivered ? { status: "delivered" as const } : {}),
+          ...(sudahSampai ? { status: "delivered" as const } : {}),
           updatedAt: new Date(),
         })
         .where(eq(shipments.id, shipmentId));
 
       // Kalau delivered, update order status
-      if (isDelivered) {
+      if (sudahSampai) {
         await db.update(orders)
           .set({ status: "delivered", updatedAt: new Date() })
           .where(eq(orders.id, orderId));
