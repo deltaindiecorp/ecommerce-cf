@@ -258,9 +258,19 @@ function WarehouseFields({ wh }: { wh?: any }) {
           <input name="postalCode" required defaultValue={wh?.postalCode ?? ""} placeholder="12345" className={FIELD} />
         </div>
         <div className="col-span-2">
-          <label className={LABEL}>ID Kota RajaOngkir</label>
+          <label className={LABEL}>ID Lokasi RajaOngkir (kelurahan)</label>
           <input name="rajaongkirCityId" type="number" min={1} required
             defaultValue={wh?.rajaongkirCityId ?? ""} className={FIELD} />
+          {wh && !wh.rajaongkirCityId ? (
+            <p className="text-[11px] text-amber-700 mt-1">
+              Belum diisi — gudang ini tidak bisa memproses pesanan sampai lokasinya dipilih.
+              Pakai pencarian di atas, lalu salin ID-nya ke sini.
+            </p>
+          ) : (
+            <p className="text-[11px] text-gray-400 mt-1">
+              Pakai pencarian di atas untuk mendapatkan ID-nya — ini ID kelurahan, bukan kota.
+            </p>
+          )}
         </div>
         <div className="col-span-2">
           <label className={LABEL}>Prioritas</label>
@@ -324,6 +334,14 @@ export default function WarehousePage() {
                 </span>
               </div>
               <p className="text-sm text-gray-500 mt-1">{wh.city} · Prioritas {wh.priority}</p>
+              {/* Gudang tanpa ID lokasi menolak setiap pesanan di checkout, dan
+                  itu harus terlihat dari daftar — bukan hanya setelah ada
+                  pembeli yang gagal membayar. */}
+              {!wh.rajaongkirCityId && (
+                <p className="mt-2 rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+                  Lokasi pengiriman belum diisi — pesanan dari gudang ini akan ditolak.
+                </p>
+              )}
               <p className="text-xs text-gray-400 font-mono mt-0.5">{wh.code}</p>
 
               <div className="flex items-center gap-3 mt-3 text-xs">
@@ -575,8 +593,8 @@ export default function WarehousePage() {
                 kembali ke daftar — di tengah mengisi form. */}
             {selectedId && <input type="hidden" name="gudang" value={selectedId} />}
             <div className="flex-1 max-w-sm">
-              <label className={LABEL}>Cari ID Kota RajaOngkir</label>
-              <input name="kota" defaultValue={cityQuery} placeholder="ketik nama kota, min. 2 huruf" className={FIELD} />
+              <label className={LABEL}>Cari Lokasi Gudang (kelurahan)</label>
+              <input name="kota" defaultValue={cityQuery} placeholder="nama kelurahan / kecamatan / kota, min. 2 huruf" className={FIELD} />
             </div>
             <button type="submit" className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg text-sm">
               Cari
@@ -590,7 +608,7 @@ export default function WarehousePage() {
                 <span className="text-xs text-gray-400 pb-2">
                   {cities.length > 0
                     ? `${cities.length} hasil`
-                    : `Tidak ada kota yang cocok dengan "${cityQuery}".`}
+                    : `Tidak ada lokasi yang cocok dengan "${cityQuery}".`}
                 </span>
               )
             )}
@@ -599,9 +617,13 @@ export default function WarehousePage() {
           {cities.length > 0 && (
             <div className="mb-4 max-h-40 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50">
               {cities.map((city: any) => (
-                <div key={city.cityId} className="flex items-center justify-between px-3 py-2 text-xs">
-                  <span className="text-gray-700">{city.type} {city.cityName}, {city.province}</span>
-                  <span className="font-mono text-gray-500">ID {city.cityId}</span>
+                <div key={city.cityId} className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
+                  {/* cityName sudah berupa alamat lengkap dari API ("KELURAHAN,
+                      KECAMATAN, KOTA, PROVINSI, KODEPOS"), jadi ditampilkan apa
+                      adanya — menyusunnya ulang dari potongan hanya menambah
+                      cara untuk salah. */}
+                  <span className="text-gray-700">{city.cityName}</span>
+                  <span className="font-mono text-gray-500 shrink-0">ID {city.cityId}</span>
                 </div>
               ))}
             </div>

@@ -22,7 +22,10 @@ export const KV_KEYS = {
   ongkir:        (from: number, to: number, weight: number) => `ongkir:${from}:${to}:${weight}`,
   productCache:  (slug: string) => `product:${slug}`,
   otpEmail:      (email: string) => `otp:${email}`,
-  rajaongkirCities: "rajaongkir:cities:all",
+  // Dulu seluruh daftar kota disimpan dalam satu kunci. Tujuan sekarang sampai
+  // level kelurahan (puluhan ribu baris), jadi yang di-cache adalah hasil tiap
+  // pencarian, bukan keseluruhan daftar.
+  destinationSearch: (q: string, limit: number) => `ro:dest:${q}:${limit}`,
   // Daftar cabut token. Kunci per jti, TTL disamakan dengan sisa umur token
   // supaya entrinya hilang sendiri saat tokennya memang sudah kedaluwarsa.
   revokedToken: (jti: string) => `revoked:${jti}`,

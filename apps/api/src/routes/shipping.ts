@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../types/env";
 import { KV_KEYS, KV_TTL } from "@repo/shared";
-import { getShippingRates, getAllRajaOngkirCities } from "../services/shipping";
+import { getShippingRates, searchDestinations } from "../services/shipping";
 import type { ShippingRate, ResiStatus, CityOption } from "@repo/shared";
 import { createD1Client } from "@repo/db";
 import { shipments, warehouses } from "@repo/db/schema";
@@ -32,19 +32,12 @@ shippingRouter.get("/origin", async (c) => {
 // Autocomplete kota tujuan untuk checkout. RajaOngkir Starter tidak punya
 // endpoint search — API-nya cuma kasih SATU daftar kota lengkap (~500 baris),
 // jadi kita cache seluruh daftar 24 jam lalu filter di sini (bukan di RajaOngkir).
+// Penyaringan diserahkan ke API. Sebelumnya seluruh daftar kota diunduh lalu
+// disaring di memori; sejak tujuan turun ke level kelurahan, daftar itu puluhan
+// ribu baris dan tidak masuk akal lagi diambil utuh tiap kali.
 shippingRouter.get("/cities", async (c) => {
   const { search } = c.req.query();
-  if (!search || search.trim().length < 2) {
-    return c.json({ success: true, data: [] });
-  }
-
-  const cities = await getAllRajaOngkirCities(c.env);
-  const query  = search.trim().toLowerCase();
-
-  const matches: CityOption[] = cities
-    .filter(city => city.cityName.toLowerCase().includes(query) || city.province.toLowerCase().includes(query))
-    .slice(0, 20);
-
+  const matches = await searchDestinations(c.env, search ?? "");
   return c.json({ success: true, data: matches });
 });
 
@@ -60,13 +53,26 @@ shippingRouter.get("/ongkir", async (c) => {
   // Sumber tarif yang sama persis dengan yang dipakai checkout untuk menetapkan
   // harga. Kalau keduanya berbeda, pembeli bisa melihat satu angka lalu ditagih
   // angka lain — dan itu justru lebih buruk daripada bug yang diperbaiki di sini.
-  const rates = await getShippingRates(
-    c.env,
-    Number(origin),
-    Number(destination),
-    Number(weight),
-    couriers?.split(",").map(x => x.trim()).filter(Boolean),
-  ).catch(() => [] as ShippingRate[]);
+  // Kegagalan TIDAK ditelan jadi daftar kosong. "Tidak ada pilihan ongkir" dan
+  // "panggilan tarifnya gagal" tampak sama di layar pembeli, padahal yang satu
+  // berarti rutenya memang tidak dilayani dan yang lain berarti ada yang rusak —
+  // mis. satu kode kurir tak dikenal, yang menggugurkan SELURUH permintaan.
+  let rates: ShippingRate[];
+  try {
+    rates = await getShippingRates(
+      c.env,
+      Number(origin),
+      Number(destination),
+      Number(weight),
+      couriers?.split(",").map(x => x.trim()).filter(Boolean),
+    );
+  } catch (err) {
+    console.error("[ongkir] gagal menghitung tarif:", err);
+    return c.json({
+      success: false,
+      error:   err instanceof Error ? err.message : "Ongkir tidak bisa dihitung saat ini.",
+    }, 502);
+  }
 
   return c.json({
     success: true,

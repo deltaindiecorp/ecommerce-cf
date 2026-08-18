@@ -9,8 +9,107 @@ import { KV_KEYS, KV_TTL } from "@repo/shared";
 // Keduanya WAJIB memakai sumber yang sama. Sebelumnya checkout tidak menghitung
 // apa pun — ia memercayai angka yang dikirim form pembeli — sehingga siapa pun
 // bisa menyetel ongkirnya sendiri jadi nol.
+//
+// ─── Migrasi ke RajaOngkir by Komerce ────────────────────────────────────────
+// api.rajaongkir.com sudah MATI — port 443-nya tidak merespons sama sekali,
+// bukan sekadar menolak. Selama itu, checkout tidak bisa menghitung ongkir dan
+// menolak setiap pesanan.
+//
+// Tiga hal berubah, dan ketiganya bukan sekadar ganti URL:
+//
+//   1. Tujuan sekarang level KELURAHAN, bukan kota. ID lama (mis. 152 untuk
+//      Jakarta Pusat) tidak berlaku lagi; ID baru berkisar puluhan ribu
+//      (mis. 17596 = Cempaka Putih Barat).
+//   2. Banyak kurir bisa diminta dalam SATU panggilan, dipisah titik dua.
+//      Versi lama memanggil sekali per kurir, jadi menampilkan 17 kurir dulu
+//      berarti 17 hit dari kuota 100/hari; sekarang cukup satu.
+//   3. Bentuk responsnya datar. Yang lama bersarang tiga tingkat
+//      (rajaongkir.results[].costs[].cost[0].value); yang baru langsung
+//      { code, name, service, description, cost, etd }.
+const BASE_URL = "https://rajaongkir.komerce.id/api/v1";
 
-const ALL_COURIERS = ["jne", "pos", "tiki"]; // paket Starter RajaOngkir
+// Paket Starter yang gratis pun sudah mencakup belasan ekspedisi domestik.
+// Daftar ini dulu hanya berisi jne/pos/tiki karena batasan paket Starter LAMA —
+// pembeli kehilangan pilihan tanpa alasan. Karena semuanya masuk dalam satu
+// panggilan, memperpanjangnya tidak menambah pemakaian kuota sama sekali.
+//
+// Daftar ini bukan tebakan: API menolak kode tak dikenal dengan HTTP 422 dan
+// menyebutkan sendiri yang sah. Satu kode keliru menggugurkan SELURUH
+// permintaan, bukan cuma kurir itu — jadi menambah kurir baru harus dicocokkan
+// dengan pesan tersebut, bukan dikira-kira.
+const ALL_COURIERS = [
+  "jne", "sicepat", "ide", "sap", "jnt", "ninja", "tiki", "lion",
+  "anteraja", "pos", "ncs", "rex", "rpx", "sentral", "star", "wahana",
+];
+
+// ─── Parsing ──────────────────────────────────────────────────────────────────
+// Dipisah dari pemanggilan jaringan supaya bentuk respons bisa dikunci test
+// tanpa menembak API sungguhan — kuota gratisnya 100 panggilan/hari.
+
+type KomerceEnvelope<T> = { meta?: { message?: string; code?: number; status?: string }; data?: T | null };
+
+export function parseCostResponse(json: unknown): ShippingRate[] {
+  const body = json as KomerceEnvelope<Array<Record<string, unknown>>>;
+  const rows = Array.isArray(body?.data) ? body.data : [];
+
+  return rows
+    .map(r => ({
+      courier:     String(r.code ?? ""),
+      courierName: String(r.name ?? r.code ?? ""),
+      service:     String(r.service ?? ""),
+      serviceName: String(r.description ?? r.service ?? ""),
+      cost:        Number(r.cost ?? 0),
+      etd:         String(r.etd ?? "-").trim() || "-",
+    }))
+    // Layanan tanpa kurir atau tanpa tarif tidak bisa dipilih pembeli, dan
+    // membiarkannya lolos berarti checkout bisa menetapkan ongkir nol.
+    .filter(r => r.courier && r.service && r.cost > 0);
+}
+
+export function parseDestinationResponse(json: unknown): CityOption[] {
+  const body = json as KomerceEnvelope<Array<Record<string, unknown>>>;
+  const rows = Array.isArray(body?.data) ? body.data : [];
+
+  return rows.map(r => ({
+    cityId:     Number(r.id ?? 0),
+    // `label` sudah berupa alamat lengkap siap baca ("CEMPAKA PUTIH BARAT,
+    // CEMPAKA PUTIH, JAKARTA PUSAT, DKI JAKARTA, 10520"), jadi dipakai apa
+    // adanya — menyusunnya ulang dari potongan hanya menambah cara untuk salah.
+    cityName:   String(r.label ?? r.subdistrict_name ?? ""),
+    type:       String(r.district_name ?? ""),
+    province:   String(r.province_name ?? ""),
+    postalCode: String(r.zip_code ?? ""),
+  })).filter(c => c.cityId > 0);
+}
+
+// Pesan error yang dikembalikan Komerce ada di meta.message; tanpa membacanya,
+// kegagalan tarif hanya tampak sebagai "tidak ada pilihan ongkir".
+function envelopeError(json: unknown): string | null {
+  const meta = (json as KomerceEnvelope<unknown>)?.meta;
+  if (!meta) return null;
+  const ok = meta.status === "success" || meta.code === 200;
+  return ok ? null : (meta.message ?? `HTTP ${meta.code ?? "?"}`);
+}
+
+// ─── Pemanggilan ──────────────────────────────────────────────────────────────
+
+// Checkout menunggu panggilan ini, jadi ia tidak boleh menggantung tanpa batas.
+// Tanpa timeout, provider yang lambat membuat seluruh proses checkout tertahan
+// sampai Worker-nya sendiri menyerah — pembeli hanya melihat halaman diam.
+const TIMEOUT_MS = 8_000;
+
+function requireKey(env: Env): string {
+  const key = env.RAJAONGKIR_API_KEY?.trim();
+  // Gagal cepat dan jelas, bukan menembak API dengan kunci kosong lalu menunggu.
+  if (!key) {
+    throw new Error(
+      "RAJAONGKIR_API_KEY belum diset — ongkir tidak bisa dihitung. " +
+      "Ambil di Developer settings pada dashboard collaborator.komerce.id, lalu set lewat " +
+      "`wrangler secret put RAJAONGKIR_API_KEY`, atau isi di apps/api/.dev.vars untuk dev lokal.",
+    );
+  }
+  return key;
+}
 
 export async function getShippingRates(
   env: Env,
@@ -19,19 +118,14 @@ export async function getShippingRates(
   weight: number,
   couriers: string[] = ALL_COURIERS,
 ): Promise<ShippingRate[]> {
-  const cacheKey = KV_KEYS.ongkir(origin, destination, weight);
+  // Kurir ikut masuk kunci cache: dua permintaan dengan rute sama tapi daftar
+  // kurir berbeda menghasilkan pilihan yang berbeda pula, dan sebelumnya yang
+  // sempit bisa menimpa yang lengkap.
+  const cacheKey = `${KV_KEYS.ongkir(origin, destination, weight)}:${[...couriers].sort().join(",")}`;
   const cached   = await env.CACHE_KV.get(cacheKey);
   if (cached) return JSON.parse(cached) as ShippingRate[];
 
-  const results = await Promise.all(
-    couriers.map(courier =>
-      fetchRajaOngkir(env, String(origin), String(destination), weight, courier)
-        // Satu kurir bermasalah tidak boleh menggugurkan seluruh pilihan
-        .catch(() => [] as ShippingRate[]),
-    ),
-  );
-
-  const rates = results.flat();
+  const rates = await fetchDomesticCost(env, origin, destination, weight, couriers);
 
   // Hasil kosong tidak di-cache — kalau tidak, satu kegagalan provider terkunci
   // selama TTL dan checkout ikut tertahan sepanjang itu.
@@ -58,97 +152,76 @@ export async function resolveShippingRate(
   return match ?? null;
 }
 
-// Checkout menunggu panggilan ini, jadi ia tidak boleh menggantung tanpa batas.
-// Tanpa timeout, provider yang lambat membuat seluruh proses checkout tertahan
-// sampai Worker-nya sendiri menyerah — pembeli hanya melihat halaman diam.
-const RAJAONGKIR_TIMEOUT_MS = 8_000;
-
-export async function fetchRajaOngkir(
+export async function fetchDomesticCost(
   env: Env,
-  origin: string,
-  destination: string,
+  origin: number | string,
+  destination: number | string,
   weight: number,
-  courier: string,
+  couriers: string[] = ALL_COURIERS,
 ): Promise<ShippingRate[]> {
-  // Gagal cepat dan jelas, bukan menembak API dengan kunci kosong lalu menunggu.
-  if (!env.RAJAONGKIR_API_KEY?.trim()) {
-    throw new Error(
-      "RAJAONGKIR_API_KEY belum diset — ongkir tidak bisa dihitung. " +
-      "Set lewat `wrangler secret put RAJAONGKIR_API_KEY`, atau isi di apps/api/.dev.vars untuk dev lokal.",
-    );
-  }
-
-  const res = await fetch("https://api.rajaongkir.com/starter/cost", {
+  const res = await fetch(`${BASE_URL}/calculate/domestic-cost`, {
     method:  "POST",
     headers: {
-      key:            env.RAJAONGKIR_API_KEY,
+      key:            requireKey(env),
       "content-type": "application/x-www-form-urlencoded",
     },
-    body:   new URLSearchParams({ origin, destination, weight: String(weight), courier }).toString(),
-    signal: AbortSignal.timeout(RAJAONGKIR_TIMEOUT_MS),
+    // Titik dua, bukan koma — semua kurir dalam satu panggilan, satu hit kuota.
+    body: new URLSearchParams({
+      origin:      String(origin),
+      destination: String(destination),
+      weight:      String(weight),
+      courier:     couriers.join(":"),
+    }).toString(),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
   });
+
+  const json = await res.json().catch(() => null);
 
   // Kegagalan provider harus terlihat pemanggil, bukan berubah jadi daftar
   // kosong yang tidak bisa dibedakan dari "rute ini memang tidak dilayani".
   if (!res.ok) {
-    throw new Error(`RajaOngkir menolak permintaan (HTTP ${res.status})`);
+    throw new Error(envelopeError(json) ?? `RajaOngkir menolak permintaan (HTTP ${res.status})`);
   }
+  const err = envelopeError(json);
+  if (err) throw new Error(`RajaOngkir: ${err}`);
 
-  const json = await res.json() as {
-    rajaongkir?: {
-      results?: Array<{
-        code: string;
-        name: string;
-        costs?: Array<{ service: string; description: string; cost?: Array<{ value: number; etd: string }> }>;
-      }>;
-    };
-  };
-
-  const rates: ShippingRate[] = [];
-  for (const result of json.rajaongkir?.results ?? []) {
-    for (const service of result.costs ?? []) {
-      rates.push({
-        courier:     result.code,
-        courierName: result.name,
-        service:     service.service,
-        serviceName: service.description,
-        cost:        service.cost?.[0]?.value ?? 0,
-        etd:         service.cost?.[0]?.etd ?? "-",
-      });
-    }
-  }
-  return rates;
+  return parseCostResponse(json);
 }
 
-export async function getAllRajaOngkirCities(env: Env): Promise<CityOption[]> {
-  const cached = await env.CACHE_KV.get(KV_KEYS.rajaongkirCities);
+// ─── Pencarian tujuan ─────────────────────────────────────────────────────────
+// Dulu seluruh daftar kota diunduh sekali lalu disaring di memori — mungkin
+// karena jumlahnya cuma ratusan. Sekarang tujuannya sampai level kelurahan
+// (puluhan ribu baris), jadi pencariannya diserahkan ke API.
+export async function searchDestinations(
+  env: Env,
+  search: string,
+  limit = 20,
+): Promise<CityOption[]> {
+  const q = search.trim();
+  if (q.length < 2) return [];
+
+  const cacheKey = KV_KEYS.destinationSearch(q.toLowerCase(), limit);
+  const cached   = await env.CACHE_KV.get(cacheKey);
   if (cached) return JSON.parse(cached) as CityOption[];
 
-  if (!env.RAJAONGKIR_API_KEY?.trim()) {
-    throw new Error("RAJAONGKIR_API_KEY belum diset — daftar kota tidak bisa diambil.");
-  }
-
-  const res = await fetch("https://api.rajaongkir.com/starter/city", {
-    headers: { key: env.RAJAONGKIR_API_KEY },
-    signal:  AbortSignal.timeout(RAJAONGKIR_TIMEOUT_MS),
+  const params = new URLSearchParams({ search: q, limit: String(limit), offset: "0" });
+  const res = await fetch(`${BASE_URL}/destination/domestic-destination?${params}`, {
+    headers: { key: requireKey(env) },
+    signal:  AbortSignal.timeout(TIMEOUT_MS),
   });
-  if (!res.ok) throw new Error(`RajaOngkir menolak permintaan kota (HTTP ${res.status})`);
 
-  const json = await res.json() as {
-    rajaongkir?: { results?: Array<{ city_id: string; city_name: string; type: string; province: string; postal_code: string }> };
-  };
+  const json = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error(envelopeError(json) ?? `RajaOngkir menolak permintaan tujuan (HTTP ${res.status})`);
+  }
+  const err = envelopeError(json);
+  if (err) throw new Error(`RajaOngkir: ${err}`);
 
-  const cities: CityOption[] = (json.rajaongkir?.results ?? []).map(r => ({
-    cityId:     Number(r.city_id),
-    cityName:   r.city_name,
-    type:       r.type,
-    province:   r.province,
-    postalCode: r.postal_code,
-  }));
+  const hasil = parseDestinationResponse(json);
 
-  if (cities.length > 0) {
-    await env.CACHE_KV.put(KV_KEYS.rajaongkirCities, JSON.stringify(cities), { expirationTtl: KV_TTL.cities });
+  if (hasil.length > 0) {
+    await env.CACHE_KV.put(cacheKey, JSON.stringify(hasil), { expirationTtl: KV_TTL.cities });
   }
 
-  return cities;
+  return hasil;
 }

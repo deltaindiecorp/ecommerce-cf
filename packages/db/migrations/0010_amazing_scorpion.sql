@@ -1,0 +1,21 @@
+-- Menolkan warehouses.rajaongkir_city_id untuk SEMUA gudang yang sudah ada.
+--
+-- RajaOngkir pindah ke Komerce dan ID tujuannya berubah dari level KOTA
+-- (mis. 152 = Jakarta Pusat) ke level KELURAHAN (mis. 17596 = Cempaka Putih
+-- Barat). API baru TIDAK menolak ID lama — ia menjawab sukses dengan tarif
+-- kelurahan lain yang kebetulan ber-ID sama.
+--
+-- Sudah diuji langsung: origin 152 untuk rute Jakarta–Jakarta menghasilkan
+-- Rp 125.000 / 8 hari, padahal tarif sebenarnya Rp 10.000 / 1 hari. Salah
+-- 12x lipat, tanpa satu pun error yang bisa dilihat operator.
+--
+-- Satu kota berisi puluhan kelurahan, jadi tidak ada cara memetakan ID lama ke
+-- yang benar tanpa menebak. Semua dinolkan dan admin memilih ulang; checkout
+-- menolak gudang ber-ID 0, sehingga tidak ada pesanan yang bisa lolos dengan
+-- ongkir salah selama masa transisi.
+--
+-- Dipakai 0, bukan NULL: melepas NOT NULL menuntut tabelnya dibangun ulang, dan
+-- D1 menolak itu karena inventory, shipments, dan warehouse_transfers merujuk
+-- tabel ini — bahkan dengan defer_foreign_keys, D1 mengembalikan seluruh
+-- database ke keadaan semula.
+UPDATE `warehouses` SET `rajaongkir_city_id` = 0;

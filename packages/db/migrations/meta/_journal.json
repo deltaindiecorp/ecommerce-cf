@@ -71,6 +71,13 @@
       "when": 1786445338248,
       "tag": "0009_flaky_the_fallen",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1787036837033,
+      "tag": "0010_amazing_scorpion",
+      "breakpoints": true
     }
   ]
 }

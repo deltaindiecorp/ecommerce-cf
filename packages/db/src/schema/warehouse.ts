@@ -12,6 +12,24 @@ export const warehouses = sqliteTable("warehouses", {
   city:            text("city").notNull(),
   province:        text("province").notNull(),
   postalCode:      text("postal_code").notNull(),
+  // ID tujuan RajaOngkir untuk gudang ini, dipakai sebagai `origin` saat
+  // menghitung ongkir.
+  //
+  // NILAI 0 berarti BELUM DIISI. Sejak RajaOngkir pindah ke Komerce, ID-nya
+  // level KELURAHAN (mis. 17596), bukan kota (mis. 152). Nilai lama tidak
+  // ditolak API baru — ia dijawab sukses dengan tarif kelurahan lain yang
+  // kebetulan ber-ID sama, jadi ongkirnya salah tanpa satu pun error. Sudah
+  // diuji: origin 152 untuk rute Jakarta–Jakarta menghasilkan Rp 125.000/8 hari,
+  // padahal seharusnya Rp 10.000/1 hari.
+  //
+  // Karena itu migrasi 0010 menolkan SEMUA nilai lama alih-alih menebak mana
+  // yang masih benar, dan checkout menolak gudang yang belum diisi ulang.
+  //
+  // Dipakai 0, bukan NULL: melepas NOT NULL di SQLite menuntut tabelnya
+  // dibangun ulang, dan D1 menolak itu karena inventory, shipments, serta
+  // warehouse_transfers merujuk tabel ini — bahkan dengan defer_foreign_keys,
+  // ia mengembalikan seluruh database ke keadaan semula. 0 bukan ID yang sah,
+  // jadi tidak ada ambiguitas yang hilang.
   rajaongkirCityId:integer("rajaongkir_city_id").notNull(),
   phone:           text("phone"),
   picName:         text("pic_name"),      // penanggung jawab

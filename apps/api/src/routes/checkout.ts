@@ -144,6 +144,22 @@ checkoutRouter.post("/", optionalAuth, async (c) => {
     return c.json({ success: false, error: "Gudang pengirim tidak bisa ditentukan" }, 400);
   }
 
+  // Gudang yang belum punya ID tujuan tidak bisa dipakai menghitung ongkir.
+  // Ini muncul setelah migrasi 0010 mengosongkan ID kota versi lama — dan
+  // ditolak di sini, bukan dibiarkan lewat, karena API RajaOngkir menerima ID
+  // basi tanpa mengeluh dan mengembalikan tarif kelurahan lain. Lebih baik
+  // checkout berhenti dengan pesan yang jelas daripada menagih ongkir yang
+  // salah 12x lipat tanpa ada yang menyadarinya.
+  if (!originWarehouse.rajaongkirCityId) {
+    await releaseAcquiredLocks();
+    return c.json({
+      success: false,
+      error: `Gudang "${originWarehouse.name}" belum punya lokasi pengiriman. ` +
+             "Admin perlu memilih ulang kelurahan gudang di panel (Gudang → Edit) " +
+             "sebelum pesanan dari gudang ini bisa diproses.",
+    }, 400);
+  }
+
   const totalWeight = cart.items.reduce((sum, i) => sum + i.weight * i.qty, 0);
 
   const rate = await resolveShippingRate(c.env, {
