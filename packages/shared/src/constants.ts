@@ -42,6 +42,67 @@ export const KV_TTL = {
   passwordReset: 60 * 30,          // 30 menit — cukup untuk buka email, cukup pendek kalau bocor
 } as const;
 
+// ─── Jeda Polling Resi ────────────────────────────────────────────────────────
+// Tiap panggilan cek resi ke Binderbyte berbiaya 15 credit (Rp 15). Cron
+// berjalan tiap 30 menit, jadi tanpa jeda per-pengiriman satu kiriman menelan
+// 48 x 15 = 720 credit/hari — toko dengan 30 kiriman aktif menghabiskan sekitar
+// Rp 650 ribu sebulan, hampir seluruhnya sia-sia karena kurir tidak memperbarui
+// status secepat itu.
+//
+// Angkanya dipilih dari seberapa sering status benar-benar berubah, bukan dari
+// seberapa sering cron bisa berjalan.
+export const RESI_POLL_INTERVAL_SEC: Record<string, number> = {
+  waiting_pickup:   60 * 60 * 12,  // belum bergerak; paling jarang berubah
+  picked_up:        60 * 60 * 6,
+  in_transit:       60 * 60 * 6,
+  out_for_delivery: 60 * 60,       // bisa selesai kapan saja — di sinilah pembeli paling sering bertanya
+};
+
+// Jeda untuk status yang tidak terdaftar di atas. Konservatif: lebih baik satu
+// status tak dikenal diperiksa jarang daripada tiap 30 menit selamanya.
+export const RESI_POLL_DEFAULT_INTERVAL_SEC = 60 * 60 * 6;
+
+// Resi yang tak kunjung selesai berhenti ditagihkan. Tanpa batas ini, satu
+// kiriman yang nyangkut di sistem kurir terus dipanggil sampai ada yang sadar.
+export const RESI_POLL_MAX_AGE_DAYS = 14;
+
+// Apakah sebuah pengiriman sudah waktunya dicek lagi.
+//
+// Dipisah dari job-nya supaya bisa diuji tanpa D1, KV, maupun queue — logika
+// inilah yang menentukan tagihan, jadi ia yang paling perlu dikunci test.
+export function isResiPollDue(args: {
+  status:      string;
+  lastChecked: Date | number | null | undefined;
+  createdAt:   Date | number | null | undefined;
+  now?:        Date | number;
+}): boolean {
+  const now = toMs(args.now ?? Date.now()) ?? Date.now();
+
+  // Terlalu tua untuk terus ditagihkan.
+  const created = toMs(args.createdAt);
+  if (created != null && now - created > RESI_POLL_MAX_AGE_DAYS * 86_400_000) return false;
+
+  // Belum pernah dicek sama sekali — selalu jatuh tempo.
+  const checked = toMs(args.lastChecked);
+  if (checked == null) return true;
+
+  const jeda = (RESI_POLL_INTERVAL_SEC[args.status] ?? RESI_POLL_DEFAULT_INTERVAL_SEC) * 1000;
+
+  // Jam server yang mundur (atau lastChecked dari masa depan) tidak boleh
+  // membekukan polling selamanya.
+  if (checked > now) return true;
+
+  return now - checked >= jeda;
+}
+
+function toMs(v: Date | number | null | undefined): number | null {
+  if (v == null) return null;
+  const ms = v instanceof Date ? v.getTime() : Number(v);
+  if (!Number.isFinite(ms)) return null;
+  // Timestamp SQLite bisa datang dalam detik; angka sekecil itu pasti bukan milidetik.
+  return ms < 1e11 ? ms * 1000 : ms;
+}
+
 // ─── Zona Waktu Toko ──────────────────────────────────────────────────────────
 // Satu-satunya definisi "hari" untuk seluruh laporan. Sebelumnya ada dua
 // implementasi terpisah — SQL memakai date(..., '+7 hours') sementara JS punya

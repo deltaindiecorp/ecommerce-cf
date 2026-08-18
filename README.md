@@ -227,7 +227,13 @@ Schema Drizzle **tidak perlu diubah** — hanya dialect yang berbeda.
 
 - **Guest checkout**: `user_id NULL` di tabel `orders`, `guest_email` wajib
 - **Stock reservation**: Durable Objects untuk atomic lock, D1 untuk persistensi
-- **Resi cache**: KV 30 menit untuk kurangi biaya API Binderbyte
+- **Polling resi berjeda**: tiap cek resi ke Binderbyte berbiaya 15 credit
+  (Rp 15). Cron berjalan tiap 30 menit, tapi tiap kiriman hanya benar-benar
+  dipanggil sesuai jedanya — 1 jam untuk `out_for_delivery`, 6 jam saat transit,
+  12 jam sebelum dijemput, dan berhenti setelah 14 hari. Tanpa itu satu kiriman
+  menelan 48 × 15 = 720 credit/hari. Cache KV 30 menit dibaca lebih dulu, jadi
+  pelacakan yang baru dilakukan pembeli tidak ditagihkan dua kali
+  (lihat `isResiPollDue` di `packages/shared/src/constants.ts`)
 - **Webhook idempotency**: Cek `payment.status === "paid"` sebelum proses ulang
 - **Warehouse routing**: Nearest + priority-based, fallback ke gudang lain jika stok habis
 - **Cart session**: Header `X-Cart-Id` untuk guest, merge ke user cart saat login
