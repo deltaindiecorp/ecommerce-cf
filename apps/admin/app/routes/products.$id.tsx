@@ -160,6 +160,60 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
   );
 }
 
+// Stok milik gudang, bukan milik produk — satu produk bisa punya stok di
+// beberapa gudang sekaligus. Panel ini merangkumnya tanpa memindahkan
+// kepemilikan datanya.
+function StokProduk({ product }: { product: any }) {
+  const baris: any[] = product.stock ?? [];
+
+  if (product.trackInventory === false) {
+    return (
+      <div className="mb-5 rounded-xl border border-gray-200 bg-gray-50 px-5 py-3.5 text-sm text-gray-600">
+        <span className="font-medium text-gray-700">Stok tidak dilacak.</span>{" "}
+        Produk ini bisa dipesan tanpa perlu punya stok di gudang.
+      </div>
+    );
+  }
+
+  const totalOnHand   = baris.reduce((n, r) => n + (r.qtyOnHand ?? 0), 0);
+  const totalReserved = baris.reduce((n, r) => n + (r.qtyReserved ?? 0), 0);
+
+  return (
+    <div className="mb-5 rounded-xl bg-white shadow-sm px-5 py-4">
+      <div className="flex items-baseline gap-3 flex-wrap">
+        <h2 className="font-semibold text-gray-700">Stok</h2>
+        <span className={`text-2xl font-bold ${totalOnHand > 0 ? "text-gray-800" : "text-red-600"}`}>
+          {totalOnHand}
+        </span>
+        {totalReserved > 0 && (
+          <span className="text-xs text-gray-400">{totalReserved} sedang dipesan</span>
+        )}
+        <Link to="/warehouse" className="ml-auto text-xs text-blue-600 hover:underline">
+          Kelola stok di Gudang →
+        </Link>
+      </div>
+
+      {baris.length === 0 ? (
+        <p className="mt-2 text-xs text-gray-400">
+          Belum ada stok di gudang mana pun — produk ini tidak akan bisa dipesan.
+        </p>
+      ) : (
+        <ul className="mt-3 space-y-1">
+          {baris.map((r, i) => (
+            <li key={`${r.warehouseId}-${r.variantId ?? "induk"}-${i}`} className="flex items-baseline gap-2 text-xs">
+              <span className="text-gray-600">{r.warehouseName}</span>
+              <span className="font-mono text-gray-300">{r.warehouseCode}</span>
+              {r.variantId && <span className="text-gray-400">· varian</span>}
+              <span className="ml-auto font-medium text-gray-700">{r.qtyOnHand}</span>
+              {r.qtyReserved > 0 && <span className="text-gray-400">({r.qtyReserved} dipesan)</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export default function ProductEditPage() {
   const { product, categories } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
@@ -185,6 +239,12 @@ export default function ProductEditPage() {
         <h1 className="text-xl font-bold text-gray-800 truncate">{product.name}</h1>
         <span className="ml-auto text-xs text-gray-400 font-mono shrink-0">{product.sku}</span>
       </div>
+
+      {/* Ringkasan stok ditaruh di ATAS, sebelum form: pertanyaan pertama orang
+          saat membuka sebuah produk adalah "stoknya berapa", dan sebelumnya
+          jawabannya tidak ada di halaman ini sama sekali — hanya di halaman
+          gudang, yang tidak pernah terpikirkan dari sini. */}
+      <StokProduk product={product} />
 
       {productMsg?.ok && (
         <p className="mb-4 text-sm bg-green-50 text-green-700 border border-green-100 rounded-lg px-4 py-2.5">

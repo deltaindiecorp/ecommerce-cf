@@ -114,12 +114,30 @@ warehouseRouter.delete("/:id", requireAdmin, async (c) => {
 
 // ─── GET /api/warehouse/:id/inventory ────────────────────────────────────────
 warehouseRouter.get("/:id/inventory", requireStaff, async (c) => {
-  const db   = createD1Client(c.env.DB);
-  const rows = await db.query.inventory.findMany({
-    where: eq(inventory.warehouseId, c.req.param("id")),
-    with:  { product: true },
+  // Sebelumnya mengembalikan SEMUA baris tanpa batas. Gudang dengan ribuan SKU
+  // mengirim ribuan baris ke browser sekaligus, dan panel admin merendernya
+  // dalam satu tabel panjang tanpa penavigasi.
+  const { page, limit } = paginationSchema.parse(c.req.query());
+  const { productId }   = c.req.query();
+
+  const db    = createD1Client(c.env.DB);
+  const conds = [eq(inventory.warehouseId, c.req.param("id"))];
+  if (productId) conds.push(eq(inventory.productId, productId));
+  const where = and(...conds);
+
+  const [rows, countRows] = await Promise.all([
+    db.query.inventory.findMany({
+      where, with: { product: true },
+      limit, offset: (page - 1) * limit,
+    }),
+    db.select({ total: count() }).from(inventory).where(where),
+  ]);
+
+  return c.json({
+    success: true,
+    data: rows,
+    meta: { page, limit, total: countRows[0]?.total ?? 0 },
   });
-  return c.json({ success: true, data: rows });
 });
 
 // ─── GET /api/warehouse/:id/movements ────────────────────────────────────────

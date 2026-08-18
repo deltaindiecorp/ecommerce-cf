@@ -4,6 +4,7 @@ import { useLoaderData, useActionData, Form, Link, useNavigation } from "@remix-
 
 import { apiFetch, apiPublic, formatApiError } from "~/lib/api";
 import { isAdminRole, useAdminRole } from "~/lib/session";
+import { Collapsible } from "~/components/Collapsible";
 import { Pager } from "~/components/Pager";
 
 // Margin kotor per produk. Mengembalikan null kalau modal belum diisi — sengaja
@@ -26,15 +27,19 @@ const PAGE_SIZE = 20;
 export async function loader({ request }: LoaderFunctionArgs) {
   const page = Number(new URL(request.url).searchParams.get("page") ?? 1);
 
-  const [productsBody, categoriesBody] = await Promise.all([
+  const [productsBody, categoriesBody, warehousesBody] = await Promise.all([
     apiFetch<any[]>(request, `/api/admin/products?page=${page}&limit=${PAGE_SIZE}`),
     apiPublic<any[]>("/api/catalog/categories"),
+    // Stok tidak mungkin ada tanpa gudang. Halaman ini perlu tahu supaya bisa
+    // menjelaskan kolom stok yang kosong, alih-alih membiarkannya tampak rusak.
+    apiFetch<any[]>(request, "/api/warehouse").catch(() => ({ success: false, data: [] as any[] })),
   ]);
 
   return json({
     products:   productsBody.data ?? [],
     meta:       productsBody.meta ?? { page, limit: PAGE_SIZE, total: 0 },
     categories: categoriesBody.data ?? [],
+    adaGudang:  (warehousesBody.data ?? []).length > 0,
   });
 }
 
@@ -85,7 +90,7 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export default function ProductsPage() {
-  const { products, meta, categories } = useLoaderData<typeof loader>();
+  const { products, meta, categories, adaGudang } = useLoaderData<typeof loader>();
   const actionData    = useActionData<typeof action>();
   const nav           = useNavigation();
   const isSubmitting  = nav.state === "submitting";
@@ -98,9 +103,30 @@ export default function ProductsPage() {
         <p className="text-sm text-gray-400">{meta.total} produk total</p>
       </div>
 
-      {/* Create Form */}
-      <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
-        <h2 className="font-semibold text-gray-700 mb-4">Tambah Produk</h2>
+      {/* Tanpa gudang, kolom stok selalu kosong dan produk tidak bisa dipesan —
+          checkout menolak semuanya. Itu keadaan yang harus dijelaskan, bukan
+          dibiarkan terlihat seperti data yang belum dimuat. */}
+      {!adaGudang && (
+        <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900">
+          <p className="font-semibold">Belum ada gudang</p>
+          <p className="mt-1 text-amber-800">
+            Stok disimpan per gudang, jadi selama belum ada satu pun, semua produk berstok nol
+            dan checkout akan menolak setiap pesanan.
+          </p>
+          <Link to="/warehouse" className="mt-2 inline-block font-medium underline">
+            Buat gudang pertama →
+          </Link>
+        </div>
+      )}
+
+      {/* Form pembuatan dilipat: yang dicari orang saat membuka halaman ini
+          adalah daftarnya, bukan form kosong. Dibuka otomatis kalau submit
+          sebelumnya ditolak, supaya pesan errornya tidak ikut tersembunyi. */}
+      <Collapsible
+        title="Tambah Produk"
+        summary="isi produk baru"
+        defaultOpen={Boolean(actionData?.error)}
+      >
         <Form method="post" className="grid grid-cols-2 gap-4">
           <input type="hidden" name="intent" value="create" />
           <div>
@@ -167,7 +193,7 @@ export default function ProductsPage() {
             </button>
           </div>
         </Form>
-      </div>
+      </Collapsible>
 
       {/* Product List */}
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
@@ -179,13 +205,14 @@ export default function ProductsPage() {
               <th className="text-left px-4 py-3 font-semibold text-gray-600">SKU</th>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Harga</th>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Margin</th>
+              <th className="text-left px-4 py-3 font-semibold text-gray-600">Stok</th>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Status</th>
               <th className="px-4 py-3" />
             </tr>
           </thead>
           <tbody className="divide-y">
             {products.length === 0 ? (
-              <tr><td colSpan={6} className="text-center py-10 text-gray-400">Belum ada produk</td></tr>
+              <tr><td colSpan={7} className="text-center py-10 text-gray-400">Belum ada produk</td></tr>
             ) : (
               products.map((p: any) => (
                 <tr key={p.id} className="hover:bg-gray-50">
@@ -216,6 +243,29 @@ export default function ProductsPage() {
                         </span>
                       );
                     })()}
+                  </td>
+                  <td className="px-4 py-3">
+                    {p.trackInventory === false ? (
+                      <span className="text-xs text-gray-400" title="Pelacakan stok dimatikan untuk produk ini">
+                        tidak dilacak
+                      </span>
+                    ) : !adaGudang ? (
+                      <span className="text-xs text-gray-300">—</span>
+                    ) : (
+                      <Link to={`/warehouse?produk=${p.id}`} className="group/stok inline-block">
+                        <span className={`text-sm font-medium ${
+                          p.stock?.onHand > 0 ? "text-gray-800" : "text-red-600"
+                        } group-hover/stok:underline`}>
+                          {p.stock?.onHand ?? 0}
+                        </span>
+                        {p.stock?.reserved > 0 && (
+                          <span className="ml-1 text-xs text-gray-400">({p.stock.reserved} dipesan)</span>
+                        )}
+                      </Link>
+                    )}
+                    {p.variantCount > 0 && (
+                      <p className="text-xs text-gray-400">{p.variantCount} varian</p>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLOR[p.status] ?? "bg-gray-100"}`}>

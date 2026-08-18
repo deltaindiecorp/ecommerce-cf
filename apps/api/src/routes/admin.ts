@@ -2,8 +2,8 @@ import { Hono } from "hono";
 import type { Env } from "../types/env";
 import { requireStaff } from "../middleware/auth";
 import { createD1Client } from "@repo/db";
-import { orders, shipments, products, warehouses, adminAuditLog } from "@repo/db/schema";
-import { eq, desc, like, and, sql, count } from "drizzle-orm";
+import { orders, shipments, products, productVariants, inventory, warehouses, adminAuditLog } from "@repo/db/schema";
+import { eq, desc, like, and, sql, count, inArray, sum } from "drizzle-orm";
 import { createId } from "@repo/db";
 import {
   paginationSchema, isFulfilledStatus, orderStatusUpdateSchema,
@@ -197,18 +197,71 @@ adminRouter.get("/products", requireStaff, async (c) => {
     db.select({ total: count() }).from(products).where(where),
   ]);
 
-  return c.json({ success: true, data: rows, meta: { page, limit, total: countRows[0]?.total ?? 0 } });
+  // Stok dan jumlah varian ikut dikirim supaya daftar produk bisa
+  // menampilkannya. Tanpa ini panel admin tidak menyebut stok di mana pun
+  // kecuali di halaman gudang — tempat yang tidak terpikirkan orang saat
+  // pertanyaannya "stok produk ini berapa?".
+  //
+  // Dua query agregat untuk satu halaman produk, bukan per baris: jumlah
+  // barisnya dibatasi `limit`, jadi ini tetap dua round-trip berapa pun
+  // panjang halamannya.
+  const ids = rows.map(r => r.id);
+  const [stokRows, varianRows] = ids.length
+    ? await Promise.all([
+        db.select({
+          productId: inventory.productId,
+          onHand:    sum(inventory.qtyOnHand),
+          reserved:  sum(inventory.qtyReserved),
+        }).from(inventory).where(inArray(inventory.productId, ids)).groupBy(inventory.productId),
+        db.select({
+          productId: productVariants.productId,
+          total:     count(),
+        }).from(productVariants).where(inArray(productVariants.productId, ids)).groupBy(productVariants.productId),
+      ])
+    : [[], []];
+
+  const stokPer   = new Map(stokRows.map(r => [r.productId, r]));
+  const varianPer = new Map(varianRows.map(r => [r.productId, Number(r.total ?? 0)]));
+
+  const data = rows.map(r => ({
+    ...r,
+    stock: {
+      onHand:   Number(stokPer.get(r.id)?.onHand ?? 0),
+      reserved: Number(stokPer.get(r.id)?.reserved ?? 0),
+    },
+    variantCount: varianPer.get(r.id) ?? 0,
+  }));
+
+  return c.json({ success: true, data, meta: { page, limit, total: countRows[0]?.total ?? 0 } });
 });
 
 // ─── GET /api/admin/products/:id ───────────────────────────────────────────────
 adminRouter.get("/products/:id", requireStaff, async (c) => {
   const db      = createD1Client(c.env.DB);
+  const id      = c.req.param("id");
   const product = await db.query.products.findFirst({
-    where: eq(products.id, c.req.param("id")),
+    where: eq(products.id, id),
     with:  { category: true, variants: true },
   });
   if (!product) return c.json({ success: false, error: "Produk tidak ditemukan" }, 404);
-  return c.json({ success: true, data: product });
+
+  // Rincian stok per gudang ikut dikirim supaya halaman edit produk bisa
+  // menjawab "stok produk ini berapa, di mana" tanpa memaksa orang membuka
+  // halaman gudang satu per satu dan mencocokkan sendiri.
+  const stok = await db.select({
+    warehouseId:   inventory.warehouseId,
+    warehouseName: warehouses.name,
+    warehouseCode: warehouses.code,
+    variantId:     inventory.variantId,
+    qtyOnHand:     inventory.qtyOnHand,
+    qtyReserved:   inventory.qtyReserved,
+  })
+    .from(inventory)
+    .innerJoin(warehouses, eq(inventory.warehouseId, warehouses.id))
+    .where(eq(inventory.productId, id))
+    .orderBy(warehouses.priority);
+
+  return c.json({ success: true, data: { ...product, stock: stok } });
 });
 
 // ─── GET /api/admin/orders ────────────────────────────────────────────────────

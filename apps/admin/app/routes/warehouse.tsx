@@ -2,6 +2,8 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/cloudfla
 import { json, redirect } from "@remix-run/cloudflare";
 import { useLoaderData, useActionData, Form, Link, useNavigation, useSearchParams } from "@remix-run/react";
 
+import { Collapsible } from "~/components/Collapsible";
+import { Pager } from "~/components/Pager";
 import { apiFetch, formatApiError } from "~/lib/api";
 import { isAdminRole, useAdminRole } from "~/lib/session";
 
@@ -12,6 +14,9 @@ function optText(fd: FormData, key: string): string | null {
 
 // Arah dampak tiap jenis pergerakan terhadap stok fisik: +1 masuk, -1 keluar,
 // 0 tidak mengubah stok fisik (hanya memindahkan antara tersedia dan direservasi).
+const INV_PAGE_SIZE = 20;
+const MOV_PAGE_SIZE = 25;
+
 const MOVEMENT_DIRECTION: Record<string, number> = {
   in: 1, transfer_in: 1,
   out: -1, transfer_out: -1,
@@ -62,6 +67,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   const selectedId = url.searchParams.get("gudang") ?? "";
   const cityQuery  = url.searchParams.get("kota")   ?? "";
+  const invPage    = Number(url.searchParams.get("hal_stok") ?? 1) || 1;
+  const movPage    = Number(url.searchParams.get("hal_kartu") ?? 1) || 1;
 
   const warehousesBody = await apiFetch<any[]>(request, "/api/warehouse");
 
@@ -71,29 +78,40 @@ export async function loader({ request }: LoaderFunctionArgs) {
   let inventory: any[] = [];
   let products:  any[] = [];
   let movements: any[] = [];
+  let invMeta = { page: 1, limit: INV_PAGE_SIZE, total: 0 };
+  let movMeta = { page: 1, limit: MOV_PAGE_SIZE, total: 0 };
   if (selectedId) {
     // Produk ikut dimuat supaya penambahan stok untuk produk yang BELUM ada di
     // gudang ini bisa memakai dropdown, bukan menyuruh admin mengetik UUID.
     const [invBody, prodBody, movBody] = await Promise.all([
-      apiFetch<any[]>(request, `/api/warehouse/${selectedId}/inventory`),
+      apiFetch<any[]>(request, `/api/warehouse/${selectedId}/inventory?page=${invPage}&limit=${INV_PAGE_SIZE}`),
       apiFetch<any[]>(request, "/api/admin/products?limit=100"),
-      apiFetch<any[]>(request, `/api/warehouse/${selectedId}/movements?limit=25`),
+      apiFetch<any[]>(request, `/api/warehouse/${selectedId}/movements?page=${movPage}&limit=${MOV_PAGE_SIZE}`),
     ]);
     inventory = invBody.success  ? invBody.data ?? []  : [];
     products  = prodBody.success ? prodBody.data ?? [] : [];
     movements = movBody.success  ? movBody.data ?? []  : [];
+    invMeta   = invBody.meta ?? { page: invPage, limit: INV_PAGE_SIZE, total: inventory.length };
+    movMeta   = movBody.meta ?? { page: movPage, limit: MOV_PAGE_SIZE, total: movements.length };
   }
 
   // Pencarian kota RajaOngkir untuk mengisi rajaongkirCityId tanpa hafalan.
   // Butuh RAJAONGKIR_API_KEY aktif; kalau kosong hasilnya sekadar daftar kosong.
   let cities: any[] = [];
+  // Dibedakan dari "tidak ada hasil". Sebelumnya keduanya berakhir sebagai
+  // daftar kosong dengan satu pesan yang menyalahkan RAJAONGKIR_API_KEY —
+  // sehingga salah ketik nama kota pun dijawab "pastikan API key sudah diisi",
+  // dan kunci yang benar-benar bermasalah tidak bisa dibedakan dari kota yang
+  // memang tidak ada.
+  let cityError = false;
   if (cityQuery.trim().length >= 2) {
-    // Pencarian kota bergantung pada RajaOngkir; kegagalannya tidak boleh
-    // menjatuhkan seluruh halaman gudang, jadi ditangkap di sini.
+    // Kegagalan RajaOngkir tidak boleh menjatuhkan seluruh halaman gudang.
     const cityBody = await apiFetch<any[]>(
       request, `/api/shipping/cities?search=${encodeURIComponent(cityQuery)}`,
-    ).catch(() => ({ success: false, data: [] as any[] }));
-    cities = cityBody.success ? cityBody.data ?? [] : [];
+    ).catch(() => null);
+
+    if (cityBody?.success) cities = cityBody.data ?? [];
+    else cityError = true;
   }
 
   return json({
@@ -104,6 +122,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
     selectedId,
     cityQuery,
     cities,
+    cityError,
+    invMeta,
+    movMeta,
   });
 }
 
@@ -258,7 +279,10 @@ function WarehouseFields({ wh }: { wh?: any }) {
 }
 
 export default function WarehousePage() {
-  const { warehouses, inventory, products, movements, selectedId, cityQuery, cities } = useLoaderData<typeof loader>();
+  const {
+    warehouses, inventory, products, movements, selectedId,
+    cityQuery, cities, cityError, invMeta, movMeta,
+  } = useLoaderData<typeof loader>();
   const actionData     = useActionData<typeof action>();
   const [searchParams] = useSearchParams();
   const nav            = useNavigation();
@@ -411,6 +435,14 @@ export default function WarehousePage() {
           </table>
         </div>
 
+          <div className="px-5 pt-4">
+            <Pager
+              page={invMeta.page} limit={invMeta.limit} total={invMeta.total}
+              basePath="/warehouse" paramName="hal_stok" label="produk"
+              extraParams={{ gudang: selectedId, ...(cityQuery ? { kota: cityQuery } : {}) }}
+            />
+          </div>
+
           <div className="border-t border-gray-100 p-5">
             <h3 className="text-sm font-medium text-gray-600 mb-1">Stok Masuk / Opname</h3>
             <p className="text-xs text-gray-400 mb-3">
@@ -516,16 +548,32 @@ export default function WarehousePage() {
             </tbody>
           </table>
         </div>
+          <div className="px-5 pb-4">
+            <Pager
+              page={movMeta.page} limit={movMeta.limit} total={movMeta.total}
+              basePath="/warehouse" paramName="hal_kartu" label="pergerakan"
+              extraParams={{ gudang: selectedId, ...(cityQuery ? { kota: cityQuery } : {}) }}
+            />
+          </div>
         </div>
       )}
 
-      {/* Tambah gudang */}
+      {/* Tambah gudang — dilipat supaya tidak menumpuk di bawah inventaris dan
+          kartu stok. Terbuka sendiri saat belum ada gudang sama sekali, karena
+          di keadaan itu justru inilah satu-satunya yang perlu dikerjakan. */}
       {isAdmin && !editing && (
-        <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
-          <h2 className="font-semibold text-gray-700 mb-4">Tambah Gudang</h2>
+        <Collapsible
+          title="Tambah Gudang"
+          summary="daftarkan gudang baru"
+          defaultOpen={warehouses.length === 0 || Boolean(whError) || Boolean(cityQuery)}
+        >
 
           {/* Pencarian ID kota — supaya rajaongkirCityId tidak perlu dihafal */}
           <Form method="get" className="flex items-end gap-3 mb-4 pb-4 border-b border-gray-100">
+            {/* Form GET mengganti SELURUH query string. Tanpa baris ini, mencari
+                kota akan menutup gudang yang sedang dibuka dan melempar orang
+                kembali ke daftar — di tengah mengisi form. */}
+            {selectedId && <input type="hidden" name="gudang" value={selectedId} />}
             <div className="flex-1 max-w-sm">
               <label className={LABEL}>Cari ID Kota RajaOngkir</label>
               <input name="kota" defaultValue={cityQuery} placeholder="ketik nama kota, min. 2 huruf" className={FIELD} />
@@ -534,11 +582,17 @@ export default function WarehousePage() {
               Cari
             </button>
             {cityQuery && (
-              <span className="text-xs text-gray-400 pb-2">
-                {cities.length > 0
-                  ? `${cities.length} hasil`
-                  : "Tidak ada hasil — pastikan RAJAONGKIR_API_KEY sudah diisi."}
-              </span>
+              cityError ? (
+                <span className="text-xs text-red-600 pb-2">
+                  Pencarian gagal — RAJAONGKIR_API_KEY belum diisi atau ditolak.
+                </span>
+              ) : (
+                <span className="text-xs text-gray-400 pb-2">
+                  {cities.length > 0
+                    ? `${cities.length} hasil`
+                    : `Tidak ada kota yang cocok dengan "${cityQuery}".`}
+                </span>
+              )
             )}
           </Form>
 
@@ -563,12 +617,15 @@ export default function WarehousePage() {
               </button>
             </div>
           </Form>
-        </div>
+        </Collapsible>
       )}
 
-      {/* Transfer stok */}
-      <div className="bg-white rounded-xl shadow-sm p-6">
-        <h2 className="font-semibold text-gray-700 mb-4">Transfer Stok Antar Gudang</h2>
+      {/* Transfer stok — jarang dipakai dibanding melihat stok, jadi dilipat. */}
+      <Collapsible
+        title="Transfer Stok Antar Gudang"
+        summary="pindahkan stok"
+        defaultOpen={Boolean(transferError)}
+      >
         <ErrorNote error={transferError} />
         <Form method="post" className="grid grid-cols-2 gap-4">
           <input type="hidden" name="intent" value="transfer" />
@@ -605,7 +662,7 @@ export default function WarehousePage() {
             </button>
           </div>
         </Form>
-      </div>
+      </Collapsible>
     </div>
   );
 }
