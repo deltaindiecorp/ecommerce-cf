@@ -102,6 +102,13 @@ export const payments = sqliteTable("payments", {
   gatewayTxnId:  text("gateway_txn_id").unique(), // midtrans order_id / xendit invoice_id
   method:        text("method"),   // va_bca, qris, gopay, ovo, dana, credit_card
   vaNumber:      text("va_number"),
+  // Alamat bayar dari gateway (Snap redirect_url Midtrans / invoice_url Xendit).
+  //
+  // Disimpan, bukan sekadar dikembalikan sekali: pembeli yang menutup tab lalu
+  // kembali ke /payment akan ditolak `payment/create` dengan 409 "sudah dibuat",
+  // dan tanpa kolom ini tidak ada cara mendapatkan alamat itu lagi — pesanan
+  // yang sah jadi buntu sampai kedaluwarsa. NULL untuk COD.
+  paymentUrl:    text("payment_url"),
   amount:        integer("amount").notNull(),
   status:        text("status", {
     enum: ["pending", "paid", "failed", "expired", "refunded", "challenged"]

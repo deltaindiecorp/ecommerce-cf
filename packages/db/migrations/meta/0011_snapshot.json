@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "e013dca4-6c9b-4cb9-ab17-8a3712f9903c",
-  "prevId": "d4bd9b87-4b34-4f07-81a1-a2b992d7bacf",
+  "id": "6b345bce-9492-4bb1-82e2-0f7e96d49d88",
+  "prevId": "e013dca4-6c9b-4cb9-ab17-8a3712f9903c",
   "tables": {
     "addresses": {
       "name": "addresses",
@@ -1540,6 +1540,13 @@
         },
         "va_number": {
           "name": "va_number",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "payment_url": {
+          "name": "payment_url",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

@@ -85,6 +85,11 @@ paymentRouter.post("/create", optionalAuth, async (c) => {
     }, 502);
   }
 
+  // Alamat bayar disimpan, bukan cuma dikembalikan sekali. Pembeli yang menutup
+  // tab lalu kembali akan ditolak 409 di atas — tanpa kolom ini, pesanannya
+  // buntu sampai kedaluwarsa.
+  const paymentUrl = (result.snapRedirectUrl ?? result.invoiceUrl ?? null) as string | null;
+
   await db.insert(payments).values({
     id:           paymentId,
     orderId:      order.id,
@@ -93,6 +98,7 @@ paymentRouter.post("/create", optionalAuth, async (c) => {
     method:       method ?? null,
     amount:       order.total,
     status:       "pending",
+    paymentUrl,
     expiredAt:    new Date(Date.now() + 24 * 60 * 60 * 1000),
   });
 
@@ -268,7 +274,19 @@ paymentRouter.get("/:orderId/status", optionalAuth, async (c) => {
   });
   if (!payment) return c.json({ success: false, error: "Tidak ditemukan" }, 404);
 
-  return c.json({ success: true, data: { status: payment.status, method: payment.method } });
+  // Ikut membawa alamat bayar, gateway, dan kedaluwarsanya: halaman tunggu perlu
+  // ketiganya untuk menawarkan "lanjutkan pembayaran" tanpa membuat ulang
+  // transaksi di gateway.
+  return c.json({
+    success: true,
+    data: {
+      status:     payment.status,
+      method:     payment.method,
+      gateway:    payment.gateway,
+      paymentUrl: payment.paymentUrl,
+      expiredAt:  payment.expiredAt,
+    },
+  });
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
