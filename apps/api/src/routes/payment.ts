@@ -109,6 +109,7 @@ paymentRouter.post("/create", optionalAuth, async (c) => {
 paymentRouter.post("/webhook/midtrans", async (c) => {
   const payload = await c.req.json<{
     order_id:           string;
+    status_code:        string;
     transaction_status: string;
     fraud_status?:      string;
     gross_amount:       string;
@@ -118,10 +119,18 @@ paymentRouter.post("/webhook/midtrans", async (c) => {
     va_numbers?:        Array<{ va_number: string }>;
   }>();
 
-  // Verifikasi signature
-  const signatureInput = `${payload.order_id}${payload.transaction_id ?? ""}${payload.gross_amount}${c.env.MIDTRANS_SERVER_KEY}`;
-  const expectedSig    = await sha512(signatureInput);
+  // Verifikasi signature. Rumusnya memakai status_code — BUKAN transaction_id.
+  //
+  // Versi sebelumnya memakai transaction_id, sehingga SETIAP webhook asli dari
+  // Midtrans ditolak "Invalid signature": pembeli membayar, uangnya masuk, tapi
+  // pesanannya menggantung "pending" selamanya dan stoknya tidak pernah
+  // dipotong. Tidak pernah ketahuan karena belum ada satu transaksi pun yang
+  // sampai ke gateway — sisi klien pembayarannya sendiri belum tersambung.
+  const expectedSig = await midtransSignature(
+    payload.order_id, payload.status_code, payload.gross_amount, c.env.MIDTRANS_SERVER_KEY,
+  );
   if (expectedSig !== payload.signature_key) {
+    console.error(`[webhook] signature Midtrans tidak cocok untuk order ${payload.order_id}`);
     return c.json({ success: false, error: "Invalid signature" }, 400);
   }
 
@@ -428,6 +437,16 @@ async function handlePaymentFailed(db: any, env: Env, orderId: string, paymentId
   await releaseOrderStock(db, orderId);
 
   await env.NOTIFICATION_QUEUE.send({ type: "payment_failed", orderId, paymentId });
+}
+
+// Rumus resmi Midtrans: SHA512(order_id + status_code + gross_amount + ServerKey).
+// Dipisah jadi fungsi tersendiri supaya bisa dikunci test dengan vektor yang
+// dihitung di luar kode ini — rumus yang salah membuat seluruh webhook ditolak,
+// dan gejalanya (pesanan menggantung) tidak menunjuk ke sini sama sekali.
+export async function midtransSignature(
+  orderId: string, statusCode: string, grossAmount: string, serverKey: string,
+): Promise<string> {
+  return sha512(`${orderId}${statusCode}${grossAmount}${serverKey}`);
 }
 
 async function sha512(input: string): Promise<string> {
