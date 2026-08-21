@@ -1,42 +1,39 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/cloudflare";
 import { json, redirect } from "@remix-run/cloudflare";
 import { useLoaderData, useActionData, Form, Link, useNavigation } from "@remix-run/react";
+import { useState } from "react";
 
-import { API_BASE } from "~/lib/config";
-function getToken(r: Request) {
-  return r.headers.get("Cookie")?.match(/admin_token=([^;]+)/)?.[1] ?? "";
-}
+import { allowedNextStatuses, ORDER_STATUS_LABEL } from "@repo/shared";
 
-const ORDER_STATUSES = [
-  "pending_payment", "paid", "processing", "packed",
-  "shipped", "delivered", "completed", "cancelled", "refunded",
-];
+import { apiFetch, formatApiError } from "~/lib/api";
+import { isAdminRole, useAdminRole } from "~/lib/session";
+
+// Daftar transisi dibaca dari @repo/shared, sumber yang sama dengan penjaga di
+// API — supaya dropdown tidak pernah menawarkan status yang pasti ditolak.
 // Sinkron dengan REFUNDABLE_STATUSES di apps/api/src/routes/payment.ts
 const REFUNDABLE_STATUSES = ["paid", "processing", "packed", "shipped", "delivered", "completed"];
-const STATUS_LABEL: Record<string, string> = {
-  pending_payment: "Menunggu Bayar",
-  paid:            "Lunas",
-  processing:      "Sedang Diproses",
-  packed:          "Dikemas",
-  shipped:         "Dikirim",
-  delivered:       "Telah Diterima",
-  completed:       "Selesai",
-  cancelled:       "Dibatalkan",
-  refunded:        "Refund",
+const AUDIT_LABEL: Record<string, string> = {
+  "order.status_changed":    "Status pesanan diubah",
+  "order.shipment_created":  "Pengiriman diinput",
+  "payment.refunded":        "Refund diproses",
 };
 
+
 export async function loader({ params, request }: LoaderFunctionArgs) {
-  const token = getToken(request);
-  const res   = await fetch(`${API_BASE}/api/admin/orders/${params.id}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const body = await res.json() as any;
+  const [body, auditBody, whBody] = await Promise.all([
+    apiFetch<any>(request, `/api/admin/orders/${params.id}`),
+    apiFetch<any[]>(request, `/api/admin/audit?targetType=order&targetId=${params.id}&limit=20`),
+    apiFetch<any[]>(request, "/api/warehouse"),
+  ]);
   if (!body.success) throw new Response("Pesanan tidak ditemukan", { status: 404 });
-  return json({ order: body.data });
+  return json({
+    order:      body.data,
+    audit:      auditBody.data ?? [],
+    warehouses: (whBody.data ?? []).filter((w: any) => w.isActive),
+  });
 }
 
 export async function action({ params, request }: ActionFunctionArgs) {
-  const token    = getToken(request);
   const formData = await request.formData();
   const intent   = formData.get("intent") as string;
   const orderId  = params.id!;
@@ -44,22 +41,20 @@ export async function action({ params, request }: ActionFunctionArgs) {
   if (intent === "update_status") {
     const status = formData.get("status") as string;
     const note   = formData.get("note") as string;
-    await fetch(`${API_BASE}/api/admin/orders/${orderId}/status`, {
-      method:  "PATCH",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body:    JSON.stringify({ status, note: note || undefined }),
+    const result = await apiFetch(request, `/api/admin/orders/${orderId}/status`, {
+      method: "PATCH",
+      body:   JSON.stringify({ status, note: note || undefined }),
     });
+    if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect(`/orders/${orderId}`);
   }
 
   if (intent === "refund") {
     const reason = formData.get("reason") as string;
-    const res    = await fetch(`${API_BASE}/api/payment/${orderId}/refund`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body:    JSON.stringify({ reason: reason || undefined }),
+    const result = await apiFetch(request, `/api/payment/${orderId}/refund`, {
+      method: "POST",
+      body:   JSON.stringify({ reason: reason || undefined }),
     });
-    const result = await res.json() as any;
     if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect(`/orders/${orderId}`);
   }
@@ -73,12 +68,10 @@ export async function action({ params, request }: ActionFunctionArgs) {
       cost:        Number(formData.get("cost")),
       trackingNo:  formData.get("trackingNo") as string || undefined,
     };
-    const res  = await fetch(`${API_BASE}/api/admin/orders/${orderId}/shipment`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body:    JSON.stringify(payload),
+    const result = await apiFetch(request, `/api/admin/orders/${orderId}/shipment`, {
+      method: "POST",
+      body:   JSON.stringify(payload),
     });
-    const result = await res.json() as any;
     if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect(`/orders/${orderId}`);
   }
@@ -87,11 +80,14 @@ export async function action({ params, request }: ActionFunctionArgs) {
 }
 
 export default function OrderDetailPage() {
-  const { order }  = useLoaderData<typeof loader>();
+  const { order, audit, warehouses } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const nav        = useNavigation();
   const isSubmitting = nav.state === "submitting";
   const addr       = order.shippingAddress ?? {};
+  const nextStatuses = allowedNextStatuses(order.status);
+  const isAdmin      = isAdminRole(useAdminRole());
+  const [refundConfirm, setRefundConfirm] = useState("");
 
   return (
     <div className="max-w-4xl">
@@ -99,7 +95,7 @@ export default function OrderDetailPage() {
         <Link to="/orders" className="text-gray-400 hover:text-gray-600 text-sm">← Kembali</Link>
         <h1 className="text-xl font-bold text-gray-800">Pesanan: {order.orderNo}</h1>
         <span className={`ml-auto px-3 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700`}>
-          {STATUS_LABEL[order.status] ?? order.status}
+          {ORDER_STATUS_LABEL[order.status] ?? order.status}
         </span>
       </div>
 
@@ -167,15 +163,22 @@ export default function OrderDetailPage() {
             <h2 className="font-semibold text-gray-700 mb-3">Update Status</h2>
             <Form method="post" className="space-y-3">
               <input type="hidden" name="intent" value="update_status" />
-              <select
-                name="status"
-                defaultValue={order.status}
-                className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                {ORDER_STATUSES.map(s => (
-                  <option key={s} value={s}>{STATUS_LABEL[s] ?? s}</option>
-                ))}
-              </select>
+              {nextStatuses.length === 0 ? (
+                <p className="text-sm text-gray-500 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
+                  Status &ldquo;{ORDER_STATUS_LABEL[order.status] ?? order.status}&rdquo; sudah final
+                  dan tidak bisa diubah lagi.
+                </p>
+              ) : (
+                <select
+                  name="status"
+                  defaultValue={nextStatuses[0]}
+                  className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {nextStatuses.map(s => (
+                    <option key={s} value={s}>{ORDER_STATUS_LABEL[s] ?? s}</option>
+                  ))}
+                </select>
+              )}
               <textarea
                 name="note"
                 placeholder="Catatan admin (opsional)"
@@ -184,7 +187,7 @@ export default function OrderDetailPage() {
               />
               <button
                 type="submit"
-                disabled={isSubmitting}
+                disabled={isSubmitting || nextStatuses.length === 0}
                 className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-medium disabled:opacity-50"
               >
                 {isSubmitting ? "Menyimpan..." : "Update Status"}
@@ -212,12 +215,14 @@ export default function OrderDetailPage() {
               <h2 className="font-semibold text-gray-700 mb-3">Input Pengiriman</h2>
               <Form method="post" className="space-y-3">
                 <input type="hidden" name="intent" value="add_shipment" />
-                <input
-                  name="warehouseId"
-                  placeholder="Warehouse ID"
-                  required
-                  className="w-full border rounded-lg px-3 py-2 text-sm"
-                />
+                {/* Dulu input teks bebas berisi UUID yang harus dihafal admin.
+                    Daftar gudangnya memang sudah tersedia lewat /api/warehouse. */}
+                <select name="warehouseId" required className="w-full border rounded-lg px-3 py-2 text-sm">
+                  <option value="">Pilih gudang pengirim</option>
+                  {warehouses.map((w: any) => (
+                    <option key={w.id} value={w.id}>{w.name} · {w.city}</option>
+                  ))}
+                </select>
                 <div className="grid grid-cols-2 gap-2">
                   <input name="courier"  placeholder="Kurir (jne, jnt...)" required className="border rounded-lg px-3 py-2 text-sm" />
                   <input name="service"  placeholder="Layanan (REG, YES...)" required className="border rounded-lg px-3 py-2 text-sm" />
@@ -227,7 +232,7 @@ export default function OrderDetailPage() {
                   <input name="cost" type="number" placeholder="Biaya kirim" required className="border rounded-lg px-3 py-2 text-sm" />
                 </div>
                 <input name="trackingNo" placeholder="No. Resi (opsional)" className="w-full border rounded-lg px-3 py-2 text-sm" />
-                {actionData?.error && <p className="text-red-500 text-xs">{actionData.error as string}</p>}
+                {Boolean(actionData?.error) && <p className="text-red-500 text-xs">{formatApiError(actionData?.error)}</p>}
                 <button
                   type="submit"
                   disabled={isSubmitting}
@@ -256,19 +261,34 @@ export default function OrderDetailPage() {
           )}
 
           {/* Refund */}
-          {REFUNDABLE_STATUSES.includes(order.status) && (
+          {/* Refund mengirim uang keluar dan tidak bisa dibatalkan — API menolak
+            staff, jadi panelnya pun tidak ditampilkan daripada memberi tombol
+            yang pasti gagal. */}
+        {isAdmin && REFUNDABLE_STATUSES.includes(order.status) && (
             <div className="bg-white rounded-xl shadow-sm p-5 border border-red-100">
               <h2 className="font-semibold text-red-600 mb-3">Refund</h2>
-              <Form
-                method="post"
-                className="space-y-3"
-                onSubmit={(e) => {
-                  if (!confirm(`Yakin refund pesanan ${order.orderNo}? Aksi ini akan memproses refund ke gateway pembayaran.`)) {
-                    e.preventDefault();
-                  }
-                }}
-              >
+              {/* Sebelumnya penjaganya cuma confirm() — satu klik refleks sudah
+                  cukup untuk mengirim uang keluar. Sekarang nominalnya
+                  ditampilkan dan nomor pesanan harus diketik ulang, jadi
+                  tindakannya tidak bisa dilakukan tanpa membacanya dulu. */}
+              <p className="text-sm text-gray-700 mb-3">
+                Akan mengembalikan{" "}
+                <span className="font-bold">Rp {order.total?.toLocaleString("id-ID")}</span>{" "}
+                ke pembeli lewat gateway pembayaran. Tindakan ini tidak bisa dibatalkan.
+              </p>
+              <Form method="post" className="space-y-3">
                 <input type="hidden" name="intent" value="refund" />
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">
+                    Ketik <span className="font-mono text-gray-700">{order.orderNo}</span> untuk mengonfirmasi
+                  </label>
+                  <input
+                    value={refundConfirm}
+                    onChange={(e) => setRefundConfirm(e.target.value)}
+                    placeholder={order.orderNo}
+                    className="w-full border rounded-lg px-3 py-2 text-sm font-mono"
+                  />
+                </div>
                 <textarea
                   name="reason"
                   placeholder="Alasan refund (opsional)"
@@ -277,8 +297,8 @@ export default function OrderDetailPage() {
                 />
                 <button
                   type="submit"
-                  disabled={isSubmitting}
-                  className="w-full bg-red-600 text-white py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+                  disabled={isSubmitting || refundConfirm.trim() !== order.orderNo}
+                  className="w-full bg-red-600 text-white py-2 rounded-lg text-sm font-medium disabled:opacity-40"
                 >
                   {isSubmitting ? "Memproses..." : "Proses Refund"}
                 </button>
@@ -287,6 +307,46 @@ export default function OrderDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Riwayat aksi admin untuk order ini */}
+      <section className="bg-white rounded-xl shadow-sm p-5 mt-6">
+        <h2 className="font-semibold text-gray-700">Riwayat Aksi Admin</h2>
+        <p className="text-xs text-gray-400 mt-0.5 mb-4">
+          Siapa mengubah apa pada pesanan ini, beserta waktunya.
+        </p>
+        {audit.length === 0 ? (
+          <p className="text-sm text-gray-400">Belum ada aksi admin yang tercatat.</p>
+        ) : (
+          <div className="divide-y divide-gray-50">
+            {audit.map((a: any) => (
+              <div key={a.id} className="flex items-start gap-3 py-2.5 text-sm">
+                <span className="text-xs text-gray-400 w-36 shrink-0 pt-0.5">
+                  {a.createdAt ? new Date(a.createdAt).toLocaleString("id-ID") : "—"}
+                </span>
+                <span className="flex-1">
+                  <span className="text-gray-800">{AUDIT_LABEL[a.action] ?? a.action}</span>
+                  {a.metadata?.from && a.metadata?.to && (
+                    <span className="text-gray-500">
+                      {" "}— {ORDER_STATUS_LABEL[a.metadata.from] ?? a.metadata.from}
+                      {" → "}{ORDER_STATUS_LABEL[a.metadata.to] ?? a.metadata.to}
+                    </span>
+                  )}
+                  {a.metadata?.reason && (
+                    <span className="text-gray-500"> — {String(a.metadata.reason)}</span>
+                  )}
+                  {a.metadata?.trackingNo && (
+                    <span className="text-gray-500 font-mono text-xs"> — {String(a.metadata.trackingNo)}</span>
+                  )}
+                </span>
+                <span className="text-xs text-gray-500 shrink-0">
+                  {a.actorName ?? <span className="text-gray-300">sistem</span>}
+                  {a.actorRole && <span className="text-gray-300"> · {a.actorRole}</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }

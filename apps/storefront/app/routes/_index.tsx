@@ -2,7 +2,7 @@ import type { LoaderFunctionArgs } from "@remix-run/cloudflare";
 import { json } from "@remix-run/cloudflare";
 import { useLoaderData, Link } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
+import { apiFetch } from "~/lib/api";
 import { SiteHeader } from "~/components/SiteHeader";
 import { SiteFooter } from "~/components/SiteFooter";
 import { ProductCard } from "~/components/ProductCard";
@@ -19,14 +19,12 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const isBrowsing = Boolean(search || rawCategory);
   const category    = rawCategory === "all" ? "" : rawCategory;
 
-  const categoriesRes  = await fetch(`${API_BASE}/api/catalog/categories`);
-  const categoriesBody = await categoriesRes.json() as any;
-  const categories      = categoriesBody.data ?? [];
+  const categoriesBody = await apiFetch<any[]>(request, "/api/catalog/categories");
+  const categories     = categoriesBody.data ?? [];
 
   if (!isBrowsing) {
     // Landing page: kategori pilihan + produk unggulan (isFeatured), bukan hasil filter
-    const featuredRes  = await fetch(`${API_BASE}/api/catalog/products?limit=8&featured=true`);
-    const featuredBody = await featuredRes.json() as any;
+    const featuredBody = await apiFetch<any[]>(request, "/api/catalog/products?limit=8&featured=true");
     return json({ mode: "home" as const, categories, featured: featuredBody.data ?? [] });
   }
 
@@ -34,8 +32,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   if (search)   params.set("search", search);
   if (category) params.set("category", category);
 
-  const productsRes  = await fetch(`${API_BASE}/api/catalog/products?${params}`);
-  const productsBody = await productsRes.json() as any;
+  const productsBody = await apiFetch<any[]>(request, `/api/catalog/products?${params}`);
 
   return json({
     mode:       "browse" as const,

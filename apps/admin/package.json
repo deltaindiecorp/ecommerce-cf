@@ -7,7 +7,6 @@
   "scripts": {
     "build": "remix vite:build",
     "dev": "remix vite:dev",
-    "deploy": "wrangler pages deploy dist",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {

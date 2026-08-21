@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import type { Env } from "../types/env";
 import { KV_KEYS, KV_TTL } from "@repo/shared";
+import { getShippingRates, searchDestinations } from "../services/shipping";
+import { trackWaybill } from "../services/tracking";
 import type { ShippingRate, ResiStatus, CityOption } from "@repo/shared";
 import { createD1Client } from "@repo/db";
 import { shipments, warehouses } from "@repo/db/schema";
@@ -31,19 +33,12 @@ shippingRouter.get("/origin", async (c) => {
 // Autocomplete kota tujuan untuk checkout. RajaOngkir Starter tidak punya
 // endpoint search — API-nya cuma kasih SATU daftar kota lengkap (~500 baris),
 // jadi kita cache seluruh daftar 24 jam lalu filter di sini (bukan di RajaOngkir).
+// Penyaringan diserahkan ke API. Sebelumnya seluruh daftar kota diunduh lalu
+// disaring di memori; sejak tujuan turun ke level kelurahan, daftar itu puluhan
+// ribu baris dan tidak masuk akal lagi diambil utuh tiap kali.
 shippingRouter.get("/cities", async (c) => {
   const { search } = c.req.query();
-  if (!search || search.trim().length < 2) {
-    return c.json({ success: true, data: [] });
-  }
-
-  const cities = await getAllRajaOngkirCities(c.env);
-  const query  = search.trim().toLowerCase();
-
-  const matches: CityOption[] = cities
-    .filter(city => city.cityName.toLowerCase().includes(query) || city.province.toLowerCase().includes(query))
-    .slice(0, 20);
-
+  const matches = await searchDestinations(c.env, search ?? "");
   return c.json({ success: true, data: matches });
 });
 
@@ -56,25 +51,34 @@ shippingRouter.get("/ongkir", async (c) => {
     return c.json({ success: false, error: "origin, destination, weight wajib diisi" }, 400);
   }
 
-  const cacheKey = KV_KEYS.ongkir(Number(origin), Number(destination), Number(weight));
-  const cached   = await c.env.CACHE_KV.get(cacheKey);
-  if (cached) return c.json({ success: true, data: JSON.parse(cached), cached: true });
+  // Sumber tarif yang sama persis dengan yang dipakai checkout untuk menetapkan
+  // harga. Kalau keduanya berbeda, pembeli bisa melihat satu angka lalu ditagih
+  // angka lain — dan itu justru lebih buruk daripada bug yang diperbaiki di sini.
+  // Kegagalan TIDAK ditelan jadi daftar kosong. "Tidak ada pilihan ongkir" dan
+  // "panggilan tarifnya gagal" tampak sama di layar pembeli, padahal yang satu
+  // berarti rutenya memang tidak dilayani dan yang lain berarti ada yang rusak —
+  // mis. satu kode kurir tak dikenal, yang menggugurkan SELURUH permintaan.
+  let rates: ShippingRate[];
+  try {
+    rates = await getShippingRates(
+      c.env,
+      Number(origin),
+      Number(destination),
+      Number(weight),
+      couriers?.split(",").map(x => x.trim()).filter(Boolean),
+    );
+  } catch (err) {
+    console.error("[ongkir] gagal menghitung tarif:", err);
+    return c.json({
+      success: false,
+      error:   err instanceof Error ? err.message : "Ongkir tidak bisa dihitung saat ini.",
+    }, 502);
+  }
 
-  const courierList = couriers?.split(",") ?? ["jne", "jnt", "sicepat", "pos", "tiki"];
-  const results: ShippingRate[] = [];
-
-  // Fetch ongkir parallel untuk semua kurir
-  await Promise.allSettled(courierList.map(async (courier) => {
-    const rates = await fetchRajaOngkir(c.env, origin, destination, Number(weight), courier);
-    results.push(...rates);
-  }));
-
-  // Sort by price
-  results.sort((a, b) => a.cost - b.cost);
-
-  await c.env.CACHE_KV.put(cacheKey, JSON.stringify(results), { expirationTtl: KV_TTL.ongkir });
-
-  return c.json({ success: true, data: results });
+  return c.json({
+    success: true,
+    data:    [...rates].sort((a, b) => a.cost - b.cost),
+  });
 });
 
 // ─── GET /api/shipping/resi/:no ───────────────────────────────────────────────
@@ -86,7 +90,7 @@ shippingRouter.get("/resi/:no", async (c) => {
   const cached = await c.env.CACHE_KV.get(cacheKey);
   if (cached) return c.json({ success: true, data: JSON.parse(cached), cached: true });
 
-  const status = await fetchBinderbyte(c.env, no, courier);
+  const status = await trackWaybill(c.env, no, courier);
   if (!status)  return c.json({ success: false, error: "Nomor resi tidak ditemukan" }, 404);
 
   await c.env.CACHE_KV.put(cacheKey, JSON.stringify(status), { expirationTtl: KV_TTL.resi });
@@ -111,7 +115,7 @@ shippingRouter.get("/order/:orderId/track", async (c) => {
 
     resiData = cached
       ? JSON.parse(cached)
-      : await fetchBinderbyte(c.env, shipment.trackingNo, shipment.courier);
+      : await trackWaybill(c.env, shipment.trackingNo, shipment.courier);
   }
 
   return c.json({
@@ -128,110 +132,7 @@ shippingRouter.get("/order/:orderId/track", async (c) => {
   });
 });
 
-// ─── RajaOngkir Helper ────────────────────────────────────────────────────────
-async function fetchRajaOngkir(
-  env: Env,
-  origin: string,
-  destination: string,
-  weight: number,
-  courier: string
-): Promise<ShippingRate[]> {
-  const res = await fetch("https://api.rajaongkir.com/starter/cost", {
-    method:  "POST",
-    headers: {
-      key:            env.RAJAONGKIR_API_KEY,
-      "content-type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({ origin, destination, weight: String(weight), courier }).toString(),
-  });
-
-  const json = await res.json() as {
-    rajaongkir: {
-      results: Array<{
-        code: string;
-        name: string;
-        costs: Array<{ service: string; description: string; cost: Array<{ value: number; etd: string }> }>;
-      }>
-    }
-  };
-
-  const rates: ShippingRate[] = [];
-  for (const result of json.rajaongkir?.results ?? []) {
-    for (const service of result.costs ?? []) {
-      rates.push({
-        courier:     result.code,
-        courierName: result.name,
-        service:     service.service,
-        serviceName: service.description,
-        cost:        service.cost[0]?.value ?? 0,
-        etd:         service.cost[0]?.etd ?? "-",
-      });
-    }
-  }
-  return rates;
-}
 
 // ─── RajaOngkir City List Helper (untuk autocomplete) ─────────────────────────
-async function getAllRajaOngkirCities(env: Env): Promise<CityOption[]> {
-  const cached = await env.CACHE_KV.get(KV_KEYS.rajaongkirCities);
-  if (cached) return JSON.parse(cached);
-
-  const res  = await fetch("https://api.rajaongkir.com/starter/city", {
-    headers: { key: env.RAJAONGKIR_API_KEY },
-  });
-  const json = await res.json() as {
-    rajaongkir: {
-      results: Array<{
-        city_id: string; province: string; type: string;
-        city_name: string; postal_code: string;
-      }>
-    }
-  };
-
-  const cities: CityOption[] = (json.rajaongkir?.results ?? []).map(r => ({
-    cityId:     Number(r.city_id),
-    cityName:   r.city_name,
-    type:       r.type,
-    province:   r.province,
-    postalCode: r.postal_code,
-  }));
-
-  await env.CACHE_KV.put(KV_KEYS.rajaongkirCities, JSON.stringify(cities), { expirationTtl: KV_TTL.cities });
-  return cities;
-}
 
 // ─── Binderbyte Cek Resi Helper ───────────────────────────────────────────────
-async function fetchBinderbyte(
-  env: Env,
-  trackingNo: string,
-  courier?: string
-): Promise<ResiStatus | null> {
-  const params = new URLSearchParams({
-    api_key: env.BINDERBYTE_API_KEY,
-    courier: courier ?? "auto",
-    awb:     trackingNo,
-  });
-
-  const res  = await fetch(`https://api.binderbyte.com/v1/track?${params}`);
-  const json = await res.json() as {
-    status:  number;
-    message: string;
-    data?: {
-      summary: { courier_code: string; status: string; awb_date?: string };
-      history: Array<{ date: string; desc: string; location?: string }>;
-    };
-  };
-
-  if (json.status !== 200 || !json.data) return null;
-
-  return {
-    trackingNo,
-    courier:   json.data.summary.courier_code,
-    status:    json.data.summary.status,
-    history:   json.data.history.map(h => ({
-      date:        h.date,
-      description: h.desc,
-      location:    h.location,
-    })),
-  };
-}

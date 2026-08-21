@@ -2,36 +2,12 @@ import type { LoaderFunctionArgs } from "@remix-run/cloudflare";
 import { json } from "@remix-run/cloudflare";
 import { useLoaderData, Link, Form, useSearchParams } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
-function getToken(r: Request) {
-  return r.headers.get("Cookie")?.match(/admin_token=([^;]+)/)?.[1] ?? "";
-}
+import { ORDER_STATUS_LABEL, ORDER_STATUS_COLOR, ORDER_STATUS_FILTERS } from "@repo/shared";
 
-const STATUS_LABEL: Record<string, string> = {
-  pending_payment: "Menunggu Bayar",
-  paid:            "Lunas",
-  processing:      "Diproses",
-  packed:          "Dikemas",
-  shipped:         "Dikirim",
-  delivered:       "Diterima",
-  completed:       "Selesai",
-  cancelled:       "Batal",
-  refunded:        "Refund",
-};
-const STATUS_COLOR: Record<string, string> = {
-  pending_payment: "bg-yellow-100 text-yellow-700",
-  paid:            "bg-green-100 text-green-700",
-  processing:      "bg-blue-100 text-blue-700",
-  packed:          "bg-purple-100 text-purple-700",
-  shipped:         "bg-indigo-100 text-indigo-700",
-  delivered:       "bg-teal-100 text-teal-700",
-  completed:       "bg-gray-100 text-gray-700",
-  cancelled:       "bg-red-100 text-red-700",
-  refunded:        "bg-orange-100 text-orange-700",
-};
+import { apiFetch } from "~/lib/api";
+
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const token  = getToken(request);
   const url    = new URL(request.url);
   const page   = url.searchParams.get("page")   ?? "1";
   const status = url.searchParams.get("status") ?? "";
@@ -39,14 +15,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const params = new URLSearchParams({ page, limit: "20" });
   if (status) params.set("status", status);
 
-  const res  = await fetch(`${API_BASE}/api/admin/orders?${params}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const body = await res.json() as any;
+  const body = await apiFetch<any[]>(request, `/api/admin/orders?${params}`);
 
   return json({
-    orders:  body.success ? body.data  : [],
-    meta:    body.success ? body.meta  : { page: 1, limit: 20, total: 0 },
+    orders:  body.data ?? [],
+    meta:    body.meta ?? { page: 1, limit: 20, total: 0 },
     status,
   });
 }
@@ -66,7 +39,7 @@ export default function OrderListPage() {
 
       {/* Filter */}
       <div className="flex gap-2 mb-4 flex-wrap">
-        {["", "pending_payment", "paid", "processing", "packed", "shipped", "delivered", "completed", "cancelled"].map(s => (
+        {ORDER_STATUS_FILTERS.map(s => (
           <Link
             key={s}
             to={`/orders${s ? `?status=${s}` : ""}`}
@@ -74,14 +47,15 @@ export default function OrderListPage() {
               status === s ? "bg-blue-600 text-white border-blue-600" : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"
             }`}
           >
-            {s ? STATUS_LABEL[s] : "Semua"}
+            {s ? ORDER_STATUS_LABEL[s] : "Semua"}
           </Link>
         ))}
       </div>
 
       {/* Table */}
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[46rem]">
           <thead className="bg-gray-50 border-b">
             <tr>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">No. Pesanan</th>
@@ -110,8 +84,8 @@ export default function OrderListPage() {
                     {order.createdAt ? new Date(order.createdAt).toLocaleDateString("id-ID") : "—"}
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLOR[order.status] ?? "bg-gray-100 text-gray-600"}`}>
-                      {STATUS_LABEL[order.status] ?? order.status}
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${ORDER_STATUS_COLOR[order.status] ?? "bg-gray-100 text-gray-600"}`}>
+                      {ORDER_STATUS_LABEL[order.status] ?? order.status}
                     </span>
                   </td>
                   <td className="px-4 py-3">
@@ -122,6 +96,7 @@ export default function OrderListPage() {
             )}
           </tbody>
         </table>
+        </div>
       </div>
 
       {/* Pagination */}

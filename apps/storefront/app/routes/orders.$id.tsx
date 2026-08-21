@@ -2,7 +2,7 @@ import type { LoaderFunctionArgs } from "@remix-run/cloudflare";
 import { json } from "@remix-run/cloudflare";
 import { useLoaderData, Link } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
+import { apiFetch } from "~/lib/api";
 import { SiteHeader } from "~/components/SiteHeader";
 import { SiteFooter } from "~/components/SiteFooter";
 import { MobileBottomNav } from "~/components/MobileBottomNav";
@@ -30,15 +30,11 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export async function loader({ params, request }: LoaderFunctionArgs) {
-  const orderId   = params.id!;
-  const token     = request.headers.get("Cookie")?.match(/auth_token=([^;]+)/)?.[1];
+  const orderId = params.id!;
 
-  const headers: Record<string, string> = {};
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
-  // Gunakan public tracking endpoint
-  const res  = await fetch(`${API_BASE}/api/shipping/order/${orderId}/track`, { headers });
-  const body = await res.json() as any;
+  // Token pelanggan ditempelkan otomatis oleh apiFetch kalau ada — endpoint
+  // pelacakan ini publik, jadi pengunjung tanpa akun tetap bisa memakainya.
+  const body = await apiFetch<any>(request, `/api/shipping/order/${orderId}/track`);
 
   return json({ orderId, order: body.success ? body.data : null, error: body.success ? null : body.error });
 }

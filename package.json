@@ -11,8 +11,16 @@
     "type-check": "turbo run type-check",
     "test": "turbo run test",
     "db:generate": "turbo run db:generate",
-    "db:migrate": "turbo run db:migrate",
-    "deploy": "turbo run deploy"
+    "db:migrate": "node scripts/db-migrate.mjs apply --local",
+    "db:status": "node scripts/db-migrate.mjs status --local",
+    "db:status:remote": "node scripts/db-migrate.mjs status --remote",
+    "db:migrate:remote": "node scripts/db-migrate.mjs apply --remote",
+    "db:baseline": "node scripts/db-migrate.mjs baseline --local",
+    "db:baseline:remote": "node scripts/db-migrate.mjs baseline --remote",
+    "deploy:client": "node scripts/deploy.mjs",
+    "rollout": "node scripts/rollout.mjs",
+    "secrets": "node scripts/secrets.mjs",
+    "profiles": "node scripts/profile.mjs list"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -9,9 +9,60 @@ import {
   categoryInputSchema, categoryUpdateSchema,
   variantInputSchema, variantUpdateSchema,
 } from "@repo/shared";
-import { requireAdmin } from "../middleware/auth";
+import { requireAdmin, requireStaff } from "../middleware/auth";
+import { logAdminAction } from "../services/audit";
 
 export const catalogRouter = new Hono<{ Bindings: Env }>();
+
+// ─── Proyeksi kolom publik ────────────────────────────────────────────────────
+// Endpoint katalog dikonsumsi storefront dan hasilnya ikut di-cache ke KV, jadi
+// kolomnya HARUS disebut eksplisit — bukan `select()` polos. `costPrice` adalah
+// data bisnis internal; kalau ikut terkirim, margin tiap produk bisa di-scrape
+// siapa pun. Kolom baru yang sensitif cukup tidak didaftarkan di sini.
+// Kolom yang TIDAK boleh keluar ke publik. Daftar ini diuji di catalog.test.ts:
+// begitu ada kolom baru di schema yang tidak masuk daftar publik maupun daftar
+// ini, test gagal — jadi penambah kolom dipaksa memilih secara sadar.
+export const INTERNAL_PRODUCT_COLUMNS = ["costPrice"] as const;
+export const INTERNAL_VARIANT_COLUMNS = ["costPrice"] as const;
+
+export const PUBLIC_PRODUCT_COLUMNS = {
+  id: true, categoryId: true, name: true, slug: true, sku: true,
+  description: true, price: true, comparePrice: true,
+  weight: true, width: true, height: true, length: true,
+  images: true, tags: true, status: true, isFeatured: true,
+  trackInventory: true,
+  metaTitle: true, metaDesc: true, createdAt: true, updatedAt: true,
+} as const;
+
+export const PUBLIC_VARIANT_COLUMNS = {
+  id: true, productId: true, name: true, sku: true,
+  price: true, weight: true, options: true, imageUrl: true,
+  isActive: true, createdAt: true,
+} as const;
+
+export const publicProductSelect = {
+  id:           products.id,
+  categoryId:   products.categoryId,
+  name:         products.name,
+  slug:         products.slug,
+  sku:          products.sku,
+  description:  products.description,
+  price:        products.price,
+  comparePrice: products.comparePrice,
+  weight:       products.weight,
+  width:        products.width,
+  height:       products.height,
+  length:       products.length,
+  images:       products.images,
+  tags:         products.tags,
+  status:       products.status,
+  isFeatured:   products.isFeatured,
+  trackInventory: products.trackInventory,
+  metaTitle:    products.metaTitle,
+  metaDesc:     products.metaDesc,
+  createdAt:    products.createdAt,
+  updatedAt:    products.updatedAt,
+};
 
 // ─── GET /api/catalog/products ────────────────────────────────────────────────
 catalogRouter.get("/products", async (c) => {
@@ -28,7 +79,7 @@ catalogRouter.get("/products", async (c) => {
   if (featured) conditions.push(eq(products.isFeatured, true));
 
   const [rows, countRow] = await Promise.all([
-    db.select().from(products).where(and(...conditions)).limit(limit).offset(offset),
+    db.select(publicProductSelect).from(products).where(and(...conditions)).limit(limit).offset(offset),
     db.select({ count: sql<number>`count(*)` }).from(products).where(and(...conditions)),
   ]);
 
@@ -50,8 +101,12 @@ catalogRouter.get("/products/:slug", async (c) => {
 
   const db      = createD1Client(c.env.DB);
   const product = await db.query.products.findFirst({
-    where: and(eq(products.slug, slug), eq(products.status, "active")),
-    with:  { variants: { where: eq(productVariants.isActive, true) }, category: true },
+    where:   and(eq(products.slug, slug), eq(products.status, "active")),
+    columns: PUBLIC_PRODUCT_COLUMNS,
+    with:    {
+      variants: { where: eq(productVariants.isActive, true), columns: PUBLIC_VARIANT_COLUMNS },
+      category: true,
+    },
   });
 
   if (!product) return c.json({ success: false, error: "Produk tidak ditemukan" }, 404);
@@ -59,7 +114,7 @@ catalogRouter.get("/products/:slug", async (c) => {
   // Ambil stok total dari semua gudang
   const stockRows = await db.select({
     variantId:    inventory.variantId,
-    totalAvail:   sql<number>`sum(qty_available - qty_reserved)`,
+    totalAvail:   sql<number>`sum(qty_on_hand - qty_reserved)`,
   })
   .from(inventory)
   .where(eq(inventory.productId, product.id))
@@ -89,7 +144,7 @@ catalogRouter.get("/categories", async (c) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ─── POST /api/catalog/products ───────────────────────────────────────────────
-catalogRouter.post("/products", requireAdmin, async (c) => {
+catalogRouter.post("/products", requireStaff, async (c) => {
   const parsed = productInputSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 
@@ -101,7 +156,7 @@ catalogRouter.post("/products", requireAdmin, async (c) => {
 });
 
 // ─── PATCH /api/catalog/products/:id ──────────────────────────────────────────
-catalogRouter.patch("/products/:id", requireAdmin, async (c) => {
+catalogRouter.patch("/products/:id", requireStaff, async (c) => {
   const parsed = productUpdateSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 
@@ -128,13 +183,19 @@ catalogRouter.delete("/products/:id", requireAdmin, async (c) => {
   if (!current) return c.json({ success: false, error: "Produk tidak ditemukan" }, 404);
 
   await db.update(products).set({ status: "archived", updatedAt: new Date() }).where(eq(products.id, id));
+
+  await logAdminAction(db, {
+    actorId: c.get("userId" as any), action: "product.archived",
+    targetType: "product", targetId: id,
+    metadata: { name: current.name, sku: current.sku },
+  });
   await c.env.CACHE_KV.delete(KV_KEYS.productCache(current.slug));
 
   return c.json({ success: true });
 });
 
 // ─── POST /api/catalog/products/:id/variants ──────────────────────────────────
-catalogRouter.post("/products/:id/variants", requireAdmin, async (c) => {
+catalogRouter.post("/products/:id/variants", requireStaff, async (c) => {
   const parsed = variantInputSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 
@@ -151,7 +212,7 @@ catalogRouter.post("/products/:id/variants", requireAdmin, async (c) => {
 });
 
 // ─── PATCH /api/catalog/products/:id/variants/:variantId ──────────────────────
-catalogRouter.patch("/products/:id/variants/:variantId", requireAdmin, async (c) => {
+catalogRouter.patch("/products/:id/variants/:variantId", requireStaff, async (c) => {
   const parsed = variantUpdateSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 
@@ -187,7 +248,7 @@ catalogRouter.delete("/products/:id/variants/:variantId", requireAdmin, async (c
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ─── POST /api/catalog/categories ─────────────────────────────────────────────
-catalogRouter.post("/categories", requireAdmin, async (c) => {
+catalogRouter.post("/categories", requireStaff, async (c) => {
   const parsed = categoryInputSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 
@@ -199,7 +260,7 @@ catalogRouter.post("/categories", requireAdmin, async (c) => {
 });
 
 // ─── PATCH /api/catalog/categories/:id ────────────────────────────────────────
-catalogRouter.patch("/categories/:id", requireAdmin, async (c) => {
+catalogRouter.patch("/categories/:id", requireStaff, async (c) => {
   const parsed = categoryUpdateSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ success: false, error: parsed.error.flatten() }, 400);
 

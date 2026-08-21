@@ -5,11 +5,12 @@ export function SiteHeader() {
   const rootData    = useRouteLoaderData<typeof rootLoader>("root");
   const categories  = rootData?.categories ?? [];
   const cartCount   = rootData?.cartItemCount ?? 0;
+  const storeName   = rootData?.store?.storeName ?? "Deltacommerce";
 
   return (
     <header className="bg-white shadow-sm sticky top-0 z-20">
       <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-4">
-        <Link to="/" className="text-xl font-bold text-blue-600 shrink-0">Deltacommerce</Link>
+        <Link to="/" className="text-xl font-bold text-blue-600 shrink-0">{storeName}</Link>
 
         <nav className="hidden md:flex items-center gap-5 shrink-0">
           <Link to="/" className="text-sm font-medium text-blue-600">Beranda</Link>

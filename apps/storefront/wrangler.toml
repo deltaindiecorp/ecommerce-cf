@@ -1,0 +1,14 @@
+# Konfigurasi Cloudflare Pages untuk storefront.
+#
+# `name` JANGAN diedit per klien. scripts/deploy.mjs mengoper --project-name dari
+# profil (`<profil>-storefront`), dan flag itu menang atas nilai di sini — jadi
+# berkas ini tetap sama untuk semua klien. Nilai di bawah hanya cadangan untuk
+# `wrangler pages deploy` manual tanpa profil; tanpa berkas ini wrangler
+# menanyakan nama project secara interaktif dan gagal di CI.
+#
+# `pages_build_output_dir` menunjuk hasil `remix vite:build`. Aset statis ada di
+# build/client, sedangkan build/server dipakai oleh functions/[[path]].ts.
+name                   = "ecommerce-storefront"
+compatibility_date     = "2024-09-23"
+compatibility_flags    = ["nodejs_compat"]
+pages_build_output_dir = "build/client"

@@ -50,6 +50,9 @@ export type AdminStatsOverview = {
   newOrdersTrendPct:    number;
   newCustomersToday:    number;
   newCustomersTrendPct: number;
+  grossProfitToday:     number;  // laba kotor level item, TIDAK termasuk ongkir
+  grossProfitTrendPct:  number;
+  profitCoveragePct:    number;  // % unit terjual yang harga modalnya sudah diisi
   weeklyRevenue: Array<{ date: string; label: string; revenue: number }>;
 };
 

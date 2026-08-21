@@ -1,26 +1,179 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/cloudflare";
 import { json, redirect } from "@remix-run/cloudflare";
-import { useLoaderData, useActionData, Form, Link, useNavigation } from "@remix-run/react";
-import { useState } from "react";
+import { useLoaderData, useActionData, Form, Link, useNavigation, useSearchParams } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
-function getToken(r: Request) {
-  return r.headers.get("Cookie")?.match(/admin_token=([^;]+)/)?.[1] ?? "";
+import { Collapsible } from "~/components/Collapsible";
+import { Pager } from "~/components/Pager";
+import { apiFetch, formatApiError } from "~/lib/api";
+import { isAdminRole, useAdminRole } from "~/lib/session";
+
+function optText(fd: FormData, key: string): string | null {
+  const v = String(fd.get(key) ?? "").trim();
+  return v === "" ? null : v;
+}
+
+// Arah dampak tiap jenis pergerakan terhadap stok fisik: +1 masuk, -1 keluar,
+// 0 tidak mengubah stok fisik (hanya memindahkan antara tersedia dan direservasi).
+const INV_PAGE_SIZE = 20;
+const MOV_PAGE_SIZE = 25;
+
+const MOVEMENT_DIRECTION: Record<string, number> = {
+  in: 1, transfer_in: 1,
+  out: -1, transfer_out: -1,
+  adjustment: 0, reserve: 0, release: 0,
+};
+
+const MOVEMENT_LABEL: Record<string, string> = {
+  in:           "Barang masuk",
+  out:          "Keluar (order)",
+  reserve:      "Direservasi",
+  release:      "Reservasi dilepas",
+  transfer_in:  "Transfer masuk",
+  transfer_out: "Transfer keluar",
+  adjustment:   "Koreksi opname",
+};
+
+const MOVEMENT_COLOR: Record<string, string> = {
+  in:           "bg-green-100 text-green-700",
+  out:          "bg-red-100 text-red-700",
+  reserve:      "bg-yellow-100 text-yellow-700",
+  release:      "bg-gray-100 text-gray-600",
+  transfer_in:  "bg-blue-100 text-blue-700",
+  transfer_out: "bg-indigo-100 text-indigo-700",
+  adjustment:   "bg-orange-100 text-orange-700",
+};
+
+const FIELD = "w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500";
+const LABEL = "block text-xs font-medium text-gray-500 mb-1";
+
+function warehousePayload(fd: FormData) {
+  return {
+    name:             String(fd.get("name") ?? ""),
+    code:             String(fd.get("code") ?? "").toUpperCase(),
+    address:          String(fd.get("address") ?? ""),
+    city:             String(fd.get("city") ?? ""),
+    province:         String(fd.get("province") ?? ""),
+    postalCode:       String(fd.get("postalCode") ?? ""),
+    rajaongkirCityId: Number(fd.get("rajaongkirCityId") ?? 0),
+    phone:            optText(fd, "phone"),
+    picName:          optText(fd, "picName"),
+    priority:         Number(fd.get("priority") || 1),
+    isActive:         fd.get("isActive") === "on",
+  };
 }
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const token = getToken(request);
-  const [warehousesRes] = await Promise.all([
-    fetch(`${API_BASE}/api/warehouse`, { headers: { Authorization: `Bearer ${token}` } }),
-  ]);
-  const warehousesBody = await warehousesRes.json() as any;
-  return json({ warehouses: warehousesBody.success ? warehousesBody.data : [] });
+  const url = new URL(request.url);
+
+  const selectedId = url.searchParams.get("gudang") ?? "";
+  const cityQuery  = url.searchParams.get("kota")   ?? "";
+  const invPage    = Number(url.searchParams.get("hal_stok") ?? 1) || 1;
+  const movPage    = Number(url.searchParams.get("hal_kartu") ?? 1) || 1;
+
+  const warehousesBody = await apiFetch<any[]>(request, "/api/warehouse");
+
+  // Inventaris diambil di loader, bukan fetch dari browser. Versi sebelumnya
+  // memanggil /api-proxy/... yang tidak pernah ada — 404, error ditelan catch,
+  // dan tabelnya selalu tampil kosong seolah gudangnya memang tidak berisi.
+  let inventory: any[] = [];
+  let products:  any[] = [];
+  let movements: any[] = [];
+  let invMeta = { page: 1, limit: INV_PAGE_SIZE, total: 0 };
+  let movMeta = { page: 1, limit: MOV_PAGE_SIZE, total: 0 };
+  if (selectedId) {
+    // Produk ikut dimuat supaya penambahan stok untuk produk yang BELUM ada di
+    // gudang ini bisa memakai dropdown, bukan menyuruh admin mengetik UUID.
+    const [invBody, prodBody, movBody] = await Promise.all([
+      apiFetch<any[]>(request, `/api/warehouse/${selectedId}/inventory?page=${invPage}&limit=${INV_PAGE_SIZE}`),
+      apiFetch<any[]>(request, "/api/admin/products?limit=100"),
+      apiFetch<any[]>(request, `/api/warehouse/${selectedId}/movements?page=${movPage}&limit=${MOV_PAGE_SIZE}`),
+    ]);
+    inventory = invBody.success  ? invBody.data ?? []  : [];
+    products  = prodBody.success ? prodBody.data ?? [] : [];
+    movements = movBody.success  ? movBody.data ?? []  : [];
+    invMeta   = invBody.meta ?? { page: invPage, limit: INV_PAGE_SIZE, total: inventory.length };
+    movMeta   = movBody.meta ?? { page: movPage, limit: MOV_PAGE_SIZE, total: movements.length };
+  }
+
+  // Pencarian kota RajaOngkir untuk mengisi rajaongkirCityId tanpa hafalan.
+  // Butuh RAJAONGKIR_API_KEY aktif; kalau kosong hasilnya sekadar daftar kosong.
+  let cities: any[] = [];
+  // Dibedakan dari "tidak ada hasil". Sebelumnya keduanya berakhir sebagai
+  // daftar kosong dengan satu pesan yang menyalahkan RAJAONGKIR_API_KEY —
+  // sehingga salah ketik nama kota pun dijawab "pastikan API key sudah diisi",
+  // dan kunci yang benar-benar bermasalah tidak bisa dibedakan dari kota yang
+  // memang tidak ada.
+  let cityError = false;
+  if (cityQuery.trim().length >= 2) {
+    // Kegagalan RajaOngkir tidak boleh menjatuhkan seluruh halaman gudang.
+    const cityBody = await apiFetch<any[]>(
+      request, `/api/shipping/cities?search=${encodeURIComponent(cityQuery)}`,
+    ).catch(() => null);
+
+    if (cityBody?.success) cities = cityBody.data ?? [];
+    else cityError = true;
+  }
+
+  return json({
+    warehouses: warehousesBody.data ?? [],
+    inventory,
+    products,
+    movements,
+    selectedId,
+    cityQuery,
+    cities,
+    cityError,
+    invMeta,
+    movMeta,
+  });
 }
 
 export async function action({ request }: ActionFunctionArgs) {
-  const token    = getToken(request);
   const formData = await request.formData();
-  const intent   = formData.get("intent") as string;
+  const intent   = String(formData.get("intent") ?? "");
+
+  if (intent === "create_warehouse") {
+    const result = await apiFetch(request, "/api/warehouse", {
+      method: "POST", body: JSON.stringify(warehousePayload(formData)),
+    });
+    if (!result.success) return json({ error: result.error, scope: "warehouse" }, { status: 400 });
+    return redirect("/warehouse");
+  }
+
+  if (intent === "update_warehouse") {
+    const id     = String(formData.get("warehouseId") ?? "");
+    const result = await apiFetch(request, `/api/warehouse/${id}`, {
+      method: "PATCH", body: JSON.stringify(warehousePayload(formData)),
+    });
+    if (!result.success) return json({ error: result.error, scope: "warehouse" }, { status: 400 });
+    return redirect("/warehouse");
+  }
+
+  if (intent === "deactivate_warehouse") {
+    const id     = String(formData.get("warehouseId") ?? "");
+    const result = await apiFetch(request, `/api/warehouse/${id}`, { method: "DELETE" });
+    // API menolak kalau masih ada stok tersisa — pesannya ditampilkan apa adanya
+    if (!result.success) return json({ error: result.error, scope: "warehouse" }, { status: 400 });
+    return redirect("/warehouse");
+  }
+
+  if (intent === "adjust_stock") {
+    const warehouseId = String(formData.get("warehouseId") ?? "");
+    const payload = {
+      productId:    String(formData.get("productId") ?? ""),
+      variantId:    optText(formData, "variantId"),
+      qty:          Number(formData.get("qty")),
+      // Maksudnya dinyatakan, bukan disimpulkan dari tanda qty — barang datang
+      // dan koreksi opname yang naik sama-sama positif tapi beda artinya.
+      movementType: String(formData.get("movementType") ?? "adjustment"),
+      note:         optText(formData, "note"),
+    };
+    const result = await apiFetch(request, `/api/warehouse/${warehouseId}/inventory/adjust`, {
+      method: "POST", body: JSON.stringify(payload),
+    });
+    if (!result.success) return json({ error: result.error, scope: "adjust" }, { status: 400 });
+    return redirect(`/warehouse?gudang=${warehouseId}`);
+  }
 
   if (intent === "transfer") {
     const payload = {
@@ -31,162 +184,507 @@ export async function action({ request }: ActionFunctionArgs) {
       qty:           Number(formData.get("qty")),
       note:          formData.get("note") || undefined,
     };
-    const res  = await fetch(`${API_BASE}/api/warehouse/transfer`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body:    JSON.stringify(payload),
+    const result = await apiFetch(request, "/api/warehouse/transfer", {
+      method: "POST", body: JSON.stringify(payload),
     });
-    const result = await res.json() as any;
-    if (!result.success) return json({ error: result.error, selectedWarehouse: formData.get("fromWarehouse") }, { status: 400 });
+    if (!result.success) return json({ error: result.error, scope: "transfer" }, { status: 400 });
     return redirect("/warehouse");
   }
 
   if (intent === "complete_transfer") {
-    const transferId = formData.get("transferId") as string;
-    await fetch(`${API_BASE}/api/warehouse/transfer/${transferId}/complete`, {
-      method:  "PATCH",
-      headers: { Authorization: `Bearer ${token}` },
+    const transferId = String(formData.get("transferId") ?? "");
+    const result = await apiFetch(request, `/api/warehouse/transfer/${transferId}/complete`, {
+      method: "PATCH",
     });
+    if (!result.success) return json({ error: result.error, scope: "warehouse" }, { status: 400 });
     return redirect("/warehouse");
   }
 
-  return json({ error: "Intent tidak dikenal" }, { status: 400 });
+  return json({ error: "Intent tidak dikenal", scope: "warehouse" }, { status: 400 });
 }
 
-export async function inventoryLoader(warehouseId: string, token: string) {
-  const res  = await fetch(`${API_BASE}/api/warehouse/${warehouseId}/inventory`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  return await res.json() as any;
+function ErrorNote({ error }: { error: unknown }) {
+  if (!error) return null;
+  return (
+    <pre className="mb-4 text-xs bg-red-50 text-red-700 border border-red-100 rounded-lg px-4 py-2.5 whitespace-pre-wrap">
+      {formatApiError(error)}
+    </pre>
+  );
+}
+
+// Form isian gudang dipakai dua kali — tambah dan edit. Dipisah supaya keduanya
+// tidak bisa melenceng: kolom yang ditambahkan di sini otomatis ada di dua-duanya.
+function WarehouseFields({ wh }: { wh?: any }) {
+  return (
+    <>
+      <div className="grid grid-cols-12 gap-3">
+        <div className="col-span-5">
+          <label className={LABEL}>Nama Gudang</label>
+          <input name="name" required defaultValue={wh?.name ?? ""} placeholder="Gudang Jakarta" className={FIELD} />
+        </div>
+        <div className="col-span-2">
+          <label className={LABEL}>Kode</label>
+          <input name="code" required defaultValue={wh?.code ?? ""} placeholder="JKT"
+            className={`${FIELD} font-mono uppercase`} />
+        </div>
+        <div className="col-span-3">
+          <label className={LABEL}>Nama PIC</label>
+          <input name="picName" defaultValue={wh?.picName ?? ""} className={FIELD} />
+        </div>
+        <div className="col-span-2">
+          <label className={LABEL}>Telepon</label>
+          <input name="phone" defaultValue={wh?.phone ?? ""} className={FIELD} />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-12 gap-3">
+        <div className="col-span-12">
+          <label className={LABEL}>Alamat</label>
+          <input name="address" required defaultValue={wh?.address ?? ""} className={FIELD} />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-12 gap-3">
+        <div className="col-span-3">
+          <label className={LABEL}>Kota</label>
+          <input name="city" required defaultValue={wh?.city ?? ""} className={FIELD} />
+        </div>
+        <div className="col-span-3">
+          <label className={LABEL}>Provinsi</label>
+          <input name="province" required defaultValue={wh?.province ?? ""} className={FIELD} />
+        </div>
+        <div className="col-span-2">
+          <label className={LABEL}>Kode Pos</label>
+          <input name="postalCode" required defaultValue={wh?.postalCode ?? ""} placeholder="12345" className={FIELD} />
+        </div>
+        <div className="col-span-2">
+          <label className={LABEL}>ID Lokasi RajaOngkir (kelurahan)</label>
+          <input name="rajaongkirCityId" type="number" min={1} required
+            defaultValue={wh?.rajaongkirCityId ?? ""} className={FIELD} />
+          {wh && !wh.rajaongkirCityId ? (
+            <p className="text-[11px] text-amber-700 mt-1">
+              Belum diisi — gudang ini tidak bisa memproses pesanan sampai lokasinya dipilih.
+              Pakai pencarian di atas, lalu salin ID-nya ke sini.
+            </p>
+          ) : (
+            <p className="text-[11px] text-gray-400 mt-1">
+              Pakai pencarian di atas untuk mendapatkan ID-nya — ini ID kelurahan, bukan kota.
+            </p>
+          )}
+        </div>
+        <div className="col-span-2">
+          <label className={LABEL}>Prioritas</label>
+          <input name="priority" type="number" min={1} defaultValue={wh?.priority ?? 1} className={FIELD} />
+          <p className="text-[11px] text-gray-400 mt-1">1 = paling diutamakan</p>
+        </div>
+      </div>
+
+      <label className="flex items-center gap-2 text-sm text-gray-700">
+        <input type="checkbox" name="isActive" defaultChecked={wh ? Boolean(wh.isActive) : true}
+          className="rounded border-gray-300" />
+        Aktif — boleh dipakai memenuhi pesanan
+      </label>
+    </>
+  );
 }
 
 export default function WarehousePage() {
-  const { warehouses }         = useLoaderData<typeof loader>();
-  const actionData             = useActionData<typeof action>();
-  const nav                    = useNavigation();
-  const isSubmitting           = nav.state === "submitting";
-  const [selectedWh, setSelectedWh] = useState<string>("");
-  const [inventory, setInventory]   = useState<any[]>([]);
-  const [loadingInv, setLoadingInv] = useState(false);
+  const {
+    warehouses, inventory, products, movements, selectedId,
+    cityQuery, cities, cityError, invMeta, movMeta,
+  } = useLoaderData<typeof loader>();
+  const actionData     = useActionData<typeof action>();
+  const [searchParams] = useSearchParams();
+  const nav            = useNavigation();
+  const isSubmitting   = nav.state === "submitting";
 
-  async function loadInventory(whId: string) {
-    setSelectedWh(whId);
-    setLoadingInv(true);
-    try {
-      const res  = await fetch(`/api-proxy/warehouse/${whId}/inventory`);
-      const body = await res.json() as any;
-      setInventory(body.data ?? []);
-    } catch {
-      setInventory([]);
-    } finally {
-      setLoadingInv(false);
-    }
-  }
+  const editId   = searchParams.get("edit") ?? "";
+  const editing  = warehouses.find((w: any) => w.id === editId);
+  const selected = warehouses.find((w: any) => w.id === selectedId);
+
+  const whError       = actionData?.scope === "warehouse" ? actionData.error : null;
+  const transferError = actionData?.scope === "transfer"  ? actionData.error : null;
+  const adjustError   = actionData?.scope === "adjust"    ? actionData.error : null;
+  const isAdmin       = isAdminRole(useAdminRole());
 
   return (
     <div>
       <h1 className="text-2xl font-bold text-gray-800 mb-6">Manajemen Gudang</h1>
 
-      <div className="grid grid-cols-3 gap-4 mb-8">
-        {warehouses.map((wh: any) => (
-          <button
-            key={wh.id}
-            type="button"
-            onClick={() => loadInventory(wh.id)}
-            className={`bg-white rounded-xl shadow-sm p-5 text-left hover:shadow-md transition-shadow ${selectedWh === wh.id ? "ring-2 ring-blue-600" : ""}`}
-          >
-            <p className="font-semibold text-gray-800">{wh.name}</p>
-            <p className="text-sm text-gray-500">{wh.city} · Prioritas {wh.priority}</p>
-            <p className="text-xs text-gray-400 mt-1">{wh.code}</p>
-          </button>
-        ))}
+      <ErrorNote error={whError} />
+
+      {/* Daftar gudang */}
+      <div className="grid grid-cols-3 gap-4 mb-6">
+        {warehouses.length === 0 ? (
+          <p className="col-span-3 text-sm text-gray-400 bg-white rounded-xl p-6 shadow-sm">
+            Belum ada gudang. Tambahkan minimal satu — tanpa gudang aktif, checkout akan menolak semua pesanan.
+          </p>
+        ) : (
+          warehouses.map((wh: any) => (
+            <div
+              key={wh.id}
+              className={`bg-white rounded-xl shadow-sm p-5 ${selectedId === wh.id ? "ring-2 ring-blue-600" : ""} ${wh.isActive ? "" : "opacity-60"}`}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <p className="font-semibold text-gray-800">{wh.name}</p>
+                <span className={`shrink-0 px-2 py-0.5 rounded-full text-xs font-medium ${
+                  wh.isActive ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"
+                }`}>
+                  {wh.isActive ? "Aktif" : "Nonaktif"}
+                </span>
+              </div>
+              <p className="text-sm text-gray-500 mt-1">{wh.city} · Prioritas {wh.priority}</p>
+              {/* Gudang tanpa ID lokasi menolak setiap pesanan di checkout, dan
+                  itu harus terlihat dari daftar — bukan hanya setelah ada
+                  pembeli yang gagal membayar. */}
+              {!wh.rajaongkirCityId && (
+                <p className="mt-2 rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+                  Lokasi pengiriman belum diisi — pesanan dari gudang ini akan ditolak.
+                </p>
+              )}
+              <p className="text-xs text-gray-400 font-mono mt-0.5">{wh.code}</p>
+
+              <div className="flex items-center gap-3 mt-3 text-xs">
+                <Link to={`/warehouse?gudang=${wh.id}`} className="text-blue-600 hover:underline">Lihat stok</Link>
+                {isAdmin && (
+                  <Link to={`/warehouse?edit=${wh.id}`} className="text-gray-600 hover:underline">Edit</Link>
+                )}
+                {isAdmin && wh.isActive && (
+                  <Form method="post" className="inline">
+                    <input type="hidden" name="intent" value="deactivate_warehouse" />
+                    <input type="hidden" name="warehouseId" value={wh.id} />
+                    <button type="submit" className="text-red-500 hover:underline">Nonaktifkan</button>
+                  </Form>
+                )}
+              </div>
+            </div>
+          ))
+        )}
       </div>
 
-      {selectedWh && (
-        <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-6">
-          <div className="px-5 py-4 border-b flex items-center justify-between">
-            <h2 className="font-semibold text-gray-700">Inventaris Gudang</h2>
-            {loadingInv && <span className="text-xs text-gray-400 animate-pulse">Memuat...</span>}
+      {/* Edit gudang — hanya admin; API juga menolak staff */}
+      {isAdmin && editing && (
+        <div className="bg-white rounded-xl shadow-sm p-6 mb-6 border border-blue-100">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-gray-700">Edit Gudang · {editing.name}</h2>
+            <Link to="/warehouse" className="text-xs text-gray-400 hover:text-gray-600">Tutup</Link>
           </div>
-          {!loadingInv && (
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="text-left px-4 py-3 text-gray-600 font-semibold">Produk</th>
-                  <th className="text-right px-4 py-3 text-gray-600 font-semibold">Tersedia</th>
-                  <th className="text-right px-4 py-3 text-gray-600 font-semibold">Dipesan</th>
-                  <th className="text-right px-4 py-3 text-gray-600 font-semibold">Total</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {inventory.length === 0 ? (
-                  <tr><td colSpan={4} className="text-center py-8 text-gray-400">Tidak ada data inventaris</td></tr>
-                ) : (
-                  inventory.map((inv: any) => (
-                    <tr key={inv.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 text-gray-800">
-                        <p>{inv.product?.name ?? inv.productId}</p>
-                        {inv.variantId && <p className="text-xs text-gray-400">{inv.variantId}</p>}
-                      </td>
-                      <td className={`px-4 py-3 text-right font-medium ${inv.qtyAvailable - inv.qtyReserved <= (inv.lowStockThreshold ?? 5) ? "text-red-500" : "text-green-600"}`}>
-                        {inv.qtyAvailable - inv.qtyReserved}
-                      </td>
-                      <td className="px-4 py-3 text-right text-gray-500">{inv.qtyReserved}</td>
-                      <td className="px-4 py-3 text-right text-gray-700">{inv.qtyOnHand}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          )}
+          <Form method="post" className="space-y-3">
+            <input type="hidden" name="intent" value="update_warehouse" />
+            <input type="hidden" name="warehouseId" value={editing.id} />
+            <WarehouseFields wh={editing} />
+            <div className="pt-1">
+              <button type="submit" disabled={isSubmitting}
+                className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium disabled:opacity-50">
+                {isSubmitting ? "Menyimpan..." : "Simpan Perubahan"}
+              </button>
+            </div>
+          </Form>
         </div>
       )}
 
-      {/* Transfer stok */}
-      <div className="bg-white rounded-xl shadow-sm p-6">
-        <h2 className="font-semibold text-gray-700 mb-4">Transfer Stok Antar Gudang</h2>
+      {/* Inventaris gudang terpilih */}
+      {selected && (
+        <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-6">
+          <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+            <h2 className="font-semibold text-gray-700">Inventaris · {selected.name}</h2>
+            <Link to="/warehouse" className="text-xs text-gray-400 hover:text-gray-600">Tutup</Link>
+          </div>
+          <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[46rem]">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="text-left px-4 py-3 text-gray-600 font-semibold">Produk</th>
+                <th className="text-right px-4 py-3 text-gray-600 font-semibold">Bisa Dijual</th>
+                <th className="text-right px-4 py-3 text-gray-600 font-semibold">Dipesan</th>
+                <th className="text-right px-4 py-3 text-gray-600 font-semibold">Stok Fisik</th>
+                <th className="text-right px-4 py-3 text-gray-600 font-semibold">Sesuaikan</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {inventory.length === 0 ? (
+                <tr><td colSpan={5} className="text-center py-8 text-gray-400">Belum ada stok di gudang ini</td></tr>
+              ) : (
+                inventory.map((inv: any) => {
+                  const sellable = inv.qtyOnHand - inv.qtyReserved;
+                  const low      = sellable <= (inv.lowStockAlert ?? 5);
+                  return (
+                    <tr key={inv.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 text-gray-800">
+                        <p>{inv.product?.name ?? inv.productId}</p>
+                        {inv.variantId && <p className="text-xs text-gray-400 font-mono">{inv.variantId}</p>}
+                      </td>
+                      <td className={`px-4 py-3 text-right font-medium ${low ? "text-red-500" : "text-green-600"}`}>
+                        {sellable}
+                        {low && <span className="ml-1 text-[10px] font-normal">menipis</span>}
+                      </td>
+                      <td className="px-4 py-3 text-right text-gray-500">{inv.qtyReserved}</td>
+                      <td className="px-4 py-3 text-right text-gray-700">{inv.qtyOnHand}</td>
+                      {/* Penyesuaian cepat: productId/variantId diambil dari baris,
+                          jadi admin tidak perlu tahu UUID apa pun. */}
+                      <td className="px-4 py-3">
+                        <Form method="post" className="flex items-center justify-end gap-1.5">
+                          <input type="hidden" name="intent" value="adjust_stock" />
+                          <input type="hidden" name="movementType" value="adjustment" />
+                          <input type="hidden" name="warehouseId" value={selectedId} />
+                          <input type="hidden" name="productId" value={inv.productId} />
+                          {inv.variantId && <input type="hidden" name="variantId" value={inv.variantId} />}
+                          <input
+                            name="qty" type="number" required placeholder="±0"
+                            className="w-20 border border-gray-200 rounded px-2 py-1 text-xs text-right"
+                          />
+                          <input
+                            name="note" placeholder="alasan"
+                            className="w-28 border border-gray-200 rounded px-2 py-1 text-xs"
+                          />
+                          <button
+                            type="submit" disabled={isSubmitting}
+                            className="bg-gray-800 text-white px-2.5 py-1 rounded text-xs font-medium hover:bg-gray-900 disabled:opacity-50"
+                          >
+                            Simpan
+                          </button>
+                        </Form>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+
+          <div className="px-5 pt-4">
+            <Pager
+              page={invMeta.page} limit={invMeta.limit} total={invMeta.total}
+              basePath="/warehouse" paramName="hal_stok" label="produk"
+              extraParams={{ gudang: selectedId, ...(cityQuery ? { kota: cityQuery } : {}) }}
+            />
+          </div>
+
+          <div className="border-t border-gray-100 p-5">
+            <h3 className="text-sm font-medium text-gray-600 mb-1">Stok Masuk / Opname</h3>
+            <p className="text-xs text-gray-400 mb-3">
+              Nilai positif menambah stok, negatif mengoreksi turun. Pakai ini untuk barang
+              datang dari supplier, hasil opname, atau retur yang sudah diterima kembali.
+            </p>
+            <ErrorNote error={adjustError} />
+            <Form method="post" className="grid grid-cols-12 gap-3 items-end">
+              <input type="hidden" name="intent" value="adjust_stock" />
+              <input type="hidden" name="warehouseId" value={selectedId} />
+              <div className="col-span-4">
+                <label className={LABEL}>Produk</label>
+                <select name="productId" required className={FIELD}>
+                  <option value="">Pilih produk</option>
+                  {products.map((p: any) => (
+                    <option key={p.id} value={p.id}>{p.name} · {p.sku}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="col-span-3">
+                <label className={LABEL}>Jenis</label>
+                <select name="movementType" defaultValue="in" className={FIELD}>
+                  <option value="in">Barang masuk (pembelian/retur)</option>
+                  <option value="adjustment">Koreksi opname</option>
+                </select>
+              </div>
+              <div className="col-span-1">
+                <label className={LABEL}>Jumlah</label>
+                <input name="qty" type="number" required placeholder="50" className={FIELD} />
+              </div>
+              <div className="col-span-2">
+                <label className={LABEL}>Catatan</label>
+                <input name="note" placeholder="PO-1234" className={FIELD} />
+              </div>
+              <div className="col-span-2">
+                <button
+                  type="submit" disabled={isSubmitting}
+                  className="w-full bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+                >
+                  Simpan
+                </button>
+              </div>
+            </Form>
+            <p className="text-[11px] text-gray-400 mt-2">
+              Untuk produk bervarian, gunakan kolom &ldquo;Sesuaikan&rdquo; pada baris varian di tabel di atas.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Kartu stok */}
+      {selected && (
+        <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-6">
+          <div className="px-5 py-4 border-b border-gray-100">
+            <h2 className="font-semibold text-gray-700">Kartu Stok · {selected.name}</h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              25 pergerakan terakhir. Menjawab kenapa stok berubah, kapan, dan oleh siapa.
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[46rem]">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="text-left px-4 py-3 text-gray-600 font-semibold">Waktu</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-semibold">Produk</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-semibold">Jenis</th>
+                <th className="text-right px-4 py-3 text-gray-600 font-semibold">Jumlah</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-semibold">Oleh</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-semibold">Keterangan</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {movements.length === 0 ? (
+                <tr><td colSpan={6} className="text-center py-8 text-gray-400">Belum ada pergerakan stok</td></tr>
+              ) : (
+                movements.map((m: any) => {
+                  const dir = MOVEMENT_DIRECTION[m.type] ?? 0;
+                  return (
+                    <tr key={m.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-2.5 text-xs text-gray-500">
+                        {m.createdAt ? new Date(m.createdAt).toLocaleString("id-ID") : "—"}
+                      </td>
+                      <td className="px-4 py-2.5 text-gray-800">
+                        {m.productName ?? m.productId}
+                        {m.variantName && <span className="text-xs text-gray-400"> · {m.variantName}</span>}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${MOVEMENT_COLOR[m.type] ?? "bg-gray-100 text-gray-600"}`}>
+                          {MOVEMENT_LABEL[m.type] ?? m.type}
+                        </span>
+                      </td>
+                      <td className={`px-4 py-2.5 text-right font-medium ${dir > 0 ? "text-green-600" : dir < 0 ? "text-red-500" : "text-gray-500"}`}>
+                        {dir > 0 ? "+" : dir < 0 ? "−" : ""}{m.qty}
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-gray-600">
+                        {m.actorName ?? <span className="text-gray-300">sistem</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-gray-500">{m.note ?? "—"}</td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+          <div className="px-5 pb-4">
+            <Pager
+              page={movMeta.page} limit={movMeta.limit} total={movMeta.total}
+              basePath="/warehouse" paramName="hal_kartu" label="pergerakan"
+              extraParams={{ gudang: selectedId, ...(cityQuery ? { kota: cityQuery } : {}) }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Tambah gudang — dilipat supaya tidak menumpuk di bawah inventaris dan
+          kartu stok. Terbuka sendiri saat belum ada gudang sama sekali, karena
+          di keadaan itu justru inilah satu-satunya yang perlu dikerjakan. */}
+      {isAdmin && !editing && (
+        <Collapsible
+          title="Tambah Gudang"
+          summary="daftarkan gudang baru"
+          defaultOpen={warehouses.length === 0 || Boolean(whError) || Boolean(cityQuery)}
+        >
+
+          {/* Pencarian ID kota — supaya rajaongkirCityId tidak perlu dihafal */}
+          <Form method="get" className="flex items-end gap-3 mb-4 pb-4 border-b border-gray-100">
+            {/* Form GET mengganti SELURUH query string. Tanpa baris ini, mencari
+                kota akan menutup gudang yang sedang dibuka dan melempar orang
+                kembali ke daftar — di tengah mengisi form. */}
+            {selectedId && <input type="hidden" name="gudang" value={selectedId} />}
+            <div className="flex-1 max-w-sm">
+              <label className={LABEL}>Cari Lokasi Gudang (kelurahan)</label>
+              <input name="kota" defaultValue={cityQuery} placeholder="nama kelurahan / kecamatan / kota, min. 2 huruf" className={FIELD} />
+            </div>
+            <button type="submit" className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg text-sm">
+              Cari
+            </button>
+            {cityQuery && (
+              cityError ? (
+                <span className="text-xs text-red-600 pb-2">
+                  Pencarian gagal — RAJAONGKIR_API_KEY belum diisi atau ditolak.
+                </span>
+              ) : (
+                <span className="text-xs text-gray-400 pb-2">
+                  {cities.length > 0
+                    ? `${cities.length} hasil`
+                    : `Tidak ada lokasi yang cocok dengan "${cityQuery}".`}
+                </span>
+              )
+            )}
+          </Form>
+
+          {cities.length > 0 && (
+            <div className="mb-4 max-h-40 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50">
+              {cities.map((city: any) => (
+                <div key={city.cityId} className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
+                  {/* cityName sudah berupa alamat lengkap dari API ("KELURAHAN,
+                      KECAMATAN, KOTA, PROVINSI, KODEPOS"), jadi ditampilkan apa
+                      adanya — menyusunnya ulang dari potongan hanya menambah
+                      cara untuk salah. */}
+                  <span className="text-gray-700">{city.cityName}</span>
+                  <span className="font-mono text-gray-500 shrink-0">ID {city.cityId}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <Form method="post" className="space-y-3">
+            <input type="hidden" name="intent" value="create_warehouse" />
+            <WarehouseFields />
+            <div className="pt-1">
+              <button type="submit" disabled={isSubmitting}
+                className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium disabled:opacity-50">
+                {isSubmitting ? "Menyimpan..." : "Tambah Gudang"}
+              </button>
+            </div>
+          </Form>
+        </Collapsible>
+      )}
+
+      {/* Transfer stok — jarang dipakai dibanding melihat stok, jadi dilipat. */}
+      <Collapsible
+        title="Transfer Stok Antar Gudang"
+        summary="pindahkan stok"
+        defaultOpen={Boolean(transferError)}
+      >
+        <ErrorNote error={transferError} />
         <Form method="post" className="grid grid-cols-2 gap-4">
           <input type="hidden" name="intent" value="transfer" />
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Dari Gudang</label>
-            <select name="fromWarehouse" required className="w-full border rounded-lg px-3 py-2 text-sm">
+            <label className={LABEL}>Dari Gudang</label>
+            <select name="fromWarehouse" required className={FIELD}>
               <option value="">Pilih gudang asal</option>
               {warehouses.map((wh: any) => <option key={wh.id} value={wh.id}>{wh.name}</option>)}
             </select>
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Ke Gudang</label>
-            <select name="toWarehouse" required className="w-full border rounded-lg px-3 py-2 text-sm">
+            <label className={LABEL}>Ke Gudang</label>
+            <select name="toWarehouse" required className={FIELD}>
               <option value="">Pilih gudang tujuan</option>
               {warehouses.map((wh: any) => <option key={wh.id} value={wh.id}>{wh.name}</option>)}
             </select>
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Product ID</label>
-            <input name="productId" required placeholder="UUID produk" className="w-full border rounded-lg px-3 py-2 text-sm" />
+            <label className={LABEL}>Product ID</label>
+            <input name="productId" required placeholder="UUID produk" className={FIELD} />
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Jumlah</label>
-            <input name="qty" type="number" min={1} required className="w-full border rounded-lg px-3 py-2 text-sm" />
+            <label className={LABEL}>Jumlah</label>
+            <input name="qty" type="number" min={1} required className={FIELD} />
           </div>
           <div className="col-span-2">
-            <label className="block text-xs text-gray-500 mb-1">Catatan (opsional)</label>
-            <input name="note" placeholder="Alasan transfer..." className="w-full border rounded-lg px-3 py-2 text-sm" />
+            <label className={LABEL}>Catatan (opsional)</label>
+            <input name="note" placeholder="Alasan transfer..." className={FIELD} />
           </div>
-          {actionData?.error && (
-            <p className="col-span-2 text-red-500 text-sm">{actionData.error as string}</p>
-          )}
           <div className="col-span-2">
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
-            >
+            <button type="submit" disabled={isSubmitting}
+              className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium disabled:opacity-50">
               {isSubmitting ? "Memproses..." : "Buat Transfer"}
             </button>
           </div>
         </Form>
-      </div>
+      </Collapsible>
     </div>
   );
 }

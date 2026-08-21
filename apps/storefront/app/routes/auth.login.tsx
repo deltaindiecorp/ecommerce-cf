@@ -1,21 +1,20 @@
 import type { ActionFunctionArgs } from "@remix-run/cloudflare";
 import { json, redirect } from "@remix-run/cloudflare";
-import { Form, useActionData, useNavigation, Link } from "@remix-run/react";
+import { Form, useActionData, useNavigation, Link , useRouteLoaderData } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
+import type { loader as rootLoader } from "~/root";
+import { apiFetch, formatApiError } from "~/lib/api";
+import { authCookie } from "~/lib/session";
 
 export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
   const email    = formData.get("email") as string;
   const password = formData.get("password") as string;
 
-  const res  = await fetch(`${API_BASE}/api/auth/login`, {
-    method:  "POST",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ email, password }),
+  const result = await apiFetch<any>(request, "/api/auth/login", {
+    method: "POST",
+    body:   JSON.stringify({ email, password }),
   });
-
-  const result = await res.json() as any;
   if (!result.success) return json({ error: result.error }, { status: 400 });
 
   const token = result.data.token;
@@ -23,12 +22,14 @@ export async function action({ request }: ActionFunctionArgs) {
 
   return redirect(redirectTo, {
     headers: {
-      "Set-Cookie": `auth_token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`,
+      "Set-Cookie": authCookie(token),
     },
   });
 }
 
 export default function LoginPage() {
+  const rootData  = useRouteLoaderData<typeof rootLoader>("root");
+  const storeName = rootData?.store?.storeName ?? "Deltacommerce";
   const actionData = useActionData<typeof action>();
   const nav        = useNavigation();
   const isLoading  = nav.state === "submitting";
@@ -37,7 +38,7 @@ export default function LoginPage() {
     <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
       <div className="bg-white rounded-xl shadow p-8 w-full max-w-sm">
         <div className="text-center mb-6">
-          <Link to="/" className="text-2xl font-bold text-blue-600">Deltacommerce</Link>
+          <Link to="/" className="text-2xl font-bold text-blue-600">{storeName}</Link>
           <h1 className="text-xl font-semibold mt-3 text-gray-800">Masuk ke Akun</h1>
         </div>
 
@@ -66,8 +67,8 @@ export default function LoginPage() {
             />
           </div>
 
-          {actionData?.error && (
-            <p className="text-red-500 text-sm">{actionData.error as string}</p>
+          {Boolean(actionData?.error) && (
+            <p className="text-red-500 text-sm">{formatApiError(actionData?.error)}</p>
           )}
 
           <button
@@ -77,6 +78,9 @@ export default function LoginPage() {
           >
             {isLoading ? "Memproses..." : "Masuk"}
           </button>
+          <Link to="/auth/forgot" className="block text-center text-sm text-gray-500 hover:text-gray-700">
+            Lupa password?
+          </Link>
         </Form>
 
         <p className="text-center text-sm text-gray-500 mt-6">

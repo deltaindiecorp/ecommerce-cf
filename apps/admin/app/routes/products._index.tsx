@@ -1,11 +1,18 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/cloudflare";
 import { json, redirect } from "@remix-run/cloudflare";
-import { useLoaderData, useActionData, Form, useNavigation } from "@remix-run/react";
+import { useLoaderData, useActionData, Form, Link, useNavigation } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
+import { apiFetch, apiPublic, formatApiError } from "~/lib/api";
+import { isAdminRole, useAdminRole } from "~/lib/session";
+import { Collapsible } from "~/components/Collapsible";
+import { Pager } from "~/components/Pager";
 
-function getToken(r: Request) {
-  return r.headers.get("Cookie")?.match(/admin_token=([^;]+)/)?.[1] ?? "";
+// Margin kotor per produk. Mengembalikan null kalau modal belum diisi — sengaja
+// tidak diperlakukan sebagai 0, karena "modal belum diketahui" dan "margin 100%"
+// adalah dua hal yang sangat berbeda buat pemilik toko.
+function grossMarginPct(price?: number | null, cost?: number | null): number | null {
+  if (cost == null || !price) return null;
+  return Math.round(((price - cost) / price) * 100);
 }
 
 const STATUS_LABEL: Record<string, string> = { active: "Aktif", draft: "Draft", archived: "Arsip" };
@@ -15,27 +22,30 @@ const STATUS_COLOR: Record<string, string> = {
   archived: "bg-gray-100 text-gray-600",
 };
 
+const PAGE_SIZE = 20;
+
 export async function loader({ request }: LoaderFunctionArgs) {
-  const token = getToken(request);
-  const [productsRes, categoriesRes] = await Promise.all([
-    fetch(`${API_BASE}/api/admin/products?limit=50`, { headers: { Authorization: `Bearer ${token}` } }),
-    fetch(`${API_BASE}/api/catalog/categories`),
+  const page = Number(new URL(request.url).searchParams.get("page") ?? 1);
+
+  const [productsBody, categoriesBody, warehousesBody] = await Promise.all([
+    apiFetch<any[]>(request, `/api/admin/products?page=${page}&limit=${PAGE_SIZE}`),
+    apiPublic<any[]>("/api/catalog/categories"),
+    // Stok tidak mungkin ada tanpa gudang. Halaman ini perlu tahu supaya bisa
+    // menjelaskan kolom stok yang kosong, alih-alih membiarkannya tampak rusak.
+    apiFetch<any[]>(request, "/api/warehouse").catch(() => ({ success: false, data: [] as any[] })),
   ]);
-  const productsBody   = await productsRes.json() as any;
-  const categoriesBody = await categoriesRes.json() as any;
 
   return json({
-    products:   productsBody.success ? productsBody.data : [],
-    total:      productsBody.meta?.total ?? 0,
-    categories: categoriesBody.success ? categoriesBody.data : [],
+    products:   productsBody.data ?? [],
+    meta:       productsBody.meta ?? { page, limit: PAGE_SIZE, total: 0 },
+    categories: categoriesBody.data ?? [],
+    adaGudang:  (warehousesBody.data ?? []).length > 0,
   });
 }
 
 export async function action({ request }: ActionFunctionArgs) {
-  const token    = getToken(request);
   const formData = await request.formData();
   const intent   = formData.get("intent") as string;
-  const headers  = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
 
   if (intent === "create") {
     const payload = {
@@ -45,12 +55,16 @@ export async function action({ request }: ActionFunctionArgs) {
       sku:         formData.get("sku"),
       description: formData.get("description") || undefined,
       price:       Number(formData.get("price")),
+      // Kosong dibiarkan undefined (bukan 0) supaya "belum diisi" tetap bisa
+      // dibedakan dari "modalnya memang nol" saat menghitung margin.
+      costPrice:   formData.get("costPrice") ? Number(formData.get("costPrice")) : undefined,
       weight:      Number(formData.get("weight") || 0),
       images:      formData.get("imageUrl") ? [String(formData.get("imageUrl"))] : [],
       status:      formData.get("status") || "draft",
     };
-    const res    = await fetch(`${API_BASE}/api/catalog/products`, { method: "POST", headers, body: JSON.stringify(payload) });
-    const result = await res.json() as any;
+    const result = await apiFetch(request, "/api/catalog/products", {
+      method: "POST", body: JSON.stringify(payload),
+    });
     if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect("/products");
   }
@@ -58,13 +72,17 @@ export async function action({ request }: ActionFunctionArgs) {
   if (intent === "update_status") {
     const id     = formData.get("id") as string;
     const status = formData.get("status") as string;
-    await fetch(`${API_BASE}/api/catalog/products/${id}`, { method: "PATCH", headers, body: JSON.stringify({ status }) });
+    const result = await apiFetch(request, `/api/catalog/products/${id}`, {
+      method: "PATCH", body: JSON.stringify({ status }),
+    });
+    if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect("/products");
   }
 
   if (intent === "archive") {
     const id = formData.get("id") as string;
-    await fetch(`${API_BASE}/api/catalog/products/${id}`, { method: "DELETE", headers });
+    const result = await apiFetch(request, `/api/catalog/products/${id}`, { method: "DELETE" });
+    if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect("/products");
   }
 
@@ -72,21 +90,43 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export default function ProductsPage() {
-  const { products, total, categories } = useLoaderData<typeof loader>();
+  const { products, meta, categories, adaGudang } = useLoaderData<typeof loader>();
   const actionData    = useActionData<typeof action>();
   const nav           = useNavigation();
   const isSubmitting  = nav.state === "submitting";
+  const isAdmin       = isAdminRole(useAdminRole());
 
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Manajemen Produk</h1>
-        <p className="text-sm text-gray-400">{total} produk total</p>
+        <p className="text-sm text-gray-400">{meta.total} produk total</p>
       </div>
 
-      {/* Create Form */}
-      <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
-        <h2 className="font-semibold text-gray-700 mb-4">Tambah Produk</h2>
+      {/* Tanpa gudang, kolom stok selalu kosong dan produk tidak bisa dipesan —
+          checkout menolak semuanya. Itu keadaan yang harus dijelaskan, bukan
+          dibiarkan terlihat seperti data yang belum dimuat. */}
+      {!adaGudang && (
+        <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900">
+          <p className="font-semibold">Belum ada gudang</p>
+          <p className="mt-1 text-amber-800">
+            Stok disimpan per gudang, jadi selama belum ada satu pun, semua produk berstok nol
+            dan checkout akan menolak setiap pesanan.
+          </p>
+          <Link to="/warehouse" className="mt-2 inline-block font-medium underline">
+            Buat gudang pertama →
+          </Link>
+        </div>
+      )}
+
+      {/* Form pembuatan dilipat: yang dicari orang saat membuka halaman ini
+          adalah daftarnya, bukan form kosong. Dibuka otomatis kalau submit
+          sebelumnya ditolak, supaya pesan errornya tidak ikut tersembunyi. */}
+      <Collapsible
+        title="Tambah Produk"
+        summary="isi produk baru"
+        defaultOpen={Boolean(actionData?.error)}
+      >
         <Form method="post" className="grid grid-cols-2 gap-4">
           <input type="hidden" name="intent" value="create" />
           <div>
@@ -109,8 +149,15 @@ export default function ProductsPage() {
             </select>
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Harga (Rp)</label>
+            <label className="block text-xs text-gray-500 mb-1">Harga Jual (Rp)</label>
             <input name="price" type="number" min={0} required className="w-full border rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">
+              Harga Modal (Rp) <span className="text-gray-400">— opsional</span>
+            </label>
+            <input name="costPrice" type="number" min={0} placeholder="Kosongkan jika belum tahu" className="w-full border rounded-lg px-3 py-2 text-sm" />
+            <p className="text-[11px] text-gray-400 mt-1">Dipakai menghitung margin. Tidak pernah tampil di storefront.</p>
           </div>
           <div>
             <label className="block text-xs text-gray-500 mb-1">Berat (gram)</label>
@@ -132,8 +179,8 @@ export default function ProductsPage() {
             </select>
           </div>
 
-          {actionData?.error && (
-            <p className="col-span-2 text-red-500 text-sm">{JSON.stringify(actionData.error)}</p>
+          {Boolean(actionData?.error) && (
+            <p className="col-span-2 text-red-500 text-sm">{formatApiError(actionData?.error)}</p>
           )}
 
           <div className="col-span-2">
@@ -146,23 +193,26 @@ export default function ProductsPage() {
             </button>
           </div>
         </Form>
-      </div>
+      </Collapsible>
 
       {/* Product List */}
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[46rem]">
           <thead className="bg-gray-50 border-b">
             <tr>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Nama</th>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">SKU</th>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Harga</th>
+              <th className="text-left px-4 py-3 font-semibold text-gray-600">Margin</th>
+              <th className="text-left px-4 py-3 font-semibold text-gray-600">Stok</th>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Status</th>
               <th className="px-4 py-3" />
             </tr>
           </thead>
           <tbody className="divide-y">
             {products.length === 0 ? (
-              <tr><td colSpan={5} className="text-center py-10 text-gray-400">Belum ada produk</td></tr>
+              <tr><td colSpan={7} className="text-center py-10 text-gray-400">Belum ada produk</td></tr>
             ) : (
               products.map((p: any) => (
                 <tr key={p.id} className="hover:bg-gray-50">
@@ -171,13 +221,59 @@ export default function ProductsPage() {
                     <p className="text-xs text-gray-400">{p.category?.name ?? "Tanpa kategori"}</p>
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-gray-600">{p.sku}</td>
-                  <td className="px-4 py-3 text-gray-800">Rp {p.price?.toLocaleString("id-ID")}</td>
+                  <td className="px-4 py-3 text-gray-800">
+                    <p>Rp {p.price?.toLocaleString("id-ID")}</p>
+                    <p className="text-xs text-gray-400">
+                      {p.costPrice != null
+                        ? `Modal Rp ${p.costPrice.toLocaleString("id-ID")}`
+                        : "Modal belum diisi"}
+                    </p>
+                  </td>
+                  <td className="px-4 py-3">
+                    {(() => {
+                      const margin = grossMarginPct(p.price, p.costPrice);
+                      if (margin == null) return <span className="text-xs text-gray-300">—</span>;
+                      return (
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                          margin < 0 ? "bg-red-100 text-red-700"
+                          : margin < 15 ? "bg-yellow-100 text-yellow-700"
+                          : "bg-green-100 text-green-700"
+                        }`}>
+                          {margin}%
+                        </span>
+                      );
+                    })()}
+                  </td>
+                  <td className="px-4 py-3">
+                    {p.trackInventory === false ? (
+                      <span className="text-xs text-gray-400" title="Pelacakan stok dimatikan untuk produk ini">
+                        tidak dilacak
+                      </span>
+                    ) : !adaGudang ? (
+                      <span className="text-xs text-gray-300">—</span>
+                    ) : (
+                      <Link to={`/warehouse?produk=${p.id}`} className="group/stok inline-block">
+                        <span className={`text-sm font-medium ${
+                          p.stock?.onHand > 0 ? "text-gray-800" : "text-red-600"
+                        } group-hover/stok:underline`}>
+                          {p.stock?.onHand ?? 0}
+                        </span>
+                        {p.stock?.reserved > 0 && (
+                          <span className="ml-1 text-xs text-gray-400">({p.stock.reserved} dipesan)</span>
+                        )}
+                      </Link>
+                    )}
+                    {p.variantCount > 0 && (
+                      <p className="text-xs text-gray-400">{p.variantCount} varian</p>
+                    )}
+                  </td>
                   <td className="px-4 py-3">
                     <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLOR[p.status] ?? "bg-gray-100"}`}>
                       {STATUS_LABEL[p.status] ?? p.status}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right space-x-2">
+                    <Link to={`/products/${p.id}`} className="text-blue-600 hover:underline text-xs">Edit</Link>
                     {p.status !== "active" && (
                       <Form method="post" className="inline">
                         <input type="hidden" name="intent" value="update_status" />
@@ -186,7 +282,7 @@ export default function ProductsPage() {
                         <button type="submit" className="text-green-600 hover:underline text-xs">Aktifkan</button>
                       </Form>
                     )}
-                    {p.status !== "archived" && (
+                    {isAdmin && p.status !== "archived" && (
                       <Form method="post" className="inline">
                         <input type="hidden" name="intent" value="archive" />
                         <input type="hidden" name="id" value={p.id} />
@@ -199,7 +295,10 @@ export default function ProductsPage() {
             )}
           </tbody>
         </table>
+        </div>
       </div>
+
+      <Pager page={meta.page} limit={meta.limit} total={meta.total} basePath="/products" />
     </div>
   );
 }

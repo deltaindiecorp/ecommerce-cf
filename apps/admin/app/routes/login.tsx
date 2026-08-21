@@ -2,30 +2,35 @@ import type { ActionFunctionArgs } from "@remix-run/cloudflare";
 import { json, redirect } from "@remix-run/cloudflare";
 import { Form, useActionData, useNavigation } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
+import { apiPublic } from "~/lib/api";
+import { STORE_URL } from "~/lib/config";
+import { sessionCookie, PANEL_ROLES } from "~/lib/session";
 
 export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
   const email    = formData.get("email") as string;
   const password = formData.get("password") as string;
 
-  const res  = await fetch(`${API_BASE}/api/auth/login`, {
-    method:  "POST",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ email, password }),
-  });
+  // Sengaja apiPublic, bukan apiFetch: di halaman ini 401 berarti kredensial
+  // salah dan harus ditampilkan, bukan memicu pengalihan balik ke /login.
+  const result = await apiPublic<{ token: string; user: { role: string } }>(
+    "/api/auth/login",
+    { method: "POST", body: JSON.stringify({ email, password }) },
+  );
 
-  const result = await res.json() as any;
-  if (!result.success) return json({ error: "Email atau password salah" }, { status: 401 });
+  if (!result.success || !result.data) {
+    return json({ error: "Email atau password salah" }, { status: 401 });
+  }
 
-  if (result.data.user.role !== "admin") {
-    return json({ error: "Akses ditolak. Bukan akun admin." }, { status: 403 });
+  // Staff kini boleh masuk panel. Sebelumnya peran ini ditolak di sini padahal
+  // API meloloskannya untuk segalanya — wewenangnya hanya bisa dipakai lewat
+  // panggilan API langsung, tanpa jalur yang terlihat.
+  if (!PANEL_ROLES.includes(result.data.user.role)) {
+    return json({ error: "Akses ditolak. Akun ini tidak punya akses panel." }, { status: 403 });
   }
 
   return redirect("/", {
-    headers: {
-      "Set-Cookie": `admin_token=${result.data.token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
-    },
+    headers: { "Set-Cookie": sessionCookie(result.data.token) },
   });
 }
 
@@ -75,6 +80,17 @@ export default function LoginPage() {
           >
             {nav.state === "submitting" ? "Masuk..." : "Masuk"}
           </button>
+
+          {/* Alur resetnya tinggal di storefront — tautan dari email juga ke
+              sana — jadi panel menautkan ke situ alih-alih menduplikasi
+              halamannya. Tanpa tautan ini, admin yang lupa password tidak punya
+              petunjuk apa pun bahwa pemulihan itu ada. */}
+          <a
+            href={`${STORE_URL}/auth/forgot`}
+            className="block text-center text-sm text-gray-400 hover:text-gray-600"
+          >
+            Lupa password?
+          </a>
         </Form>
       </div>
     </div>

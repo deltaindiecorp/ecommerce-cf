@@ -2,7 +2,9 @@ import type { Env } from "../types/env";
 import { createD1Client } from "@repo/db";
 import { shipments, orders } from "@repo/db/schema";
 import { eq, inArray } from "drizzle-orm";
-import { KV_KEYS, KV_TTL } from "@repo/shared";
+import { KV_KEYS, KV_TTL, isResiPollDue } from "@repo/shared";
+import { trackWaybill, isDelivered } from "../services/tracking";
+import { deductOrderStock } from "../services/inventory";
 
 // Dipanggil oleh Cron Trigger */30 * * * *
 export async function pollActiveShipments(env: Env) {
@@ -15,8 +17,21 @@ export async function pollActiveShipments(env: Env) {
 
   if (activeShipments.length === 0) return;
 
+  // Penyaring inilah yang menentukan tagihan Binderbyte. Tiap panggilan berbiaya
+  // 15 credit; sebelumnya SETIAP kiriman aktif dikirim ke queue tiap 30 menit,
+  // jadi satu kiriman menelan 48 x 15 = 720 credit/hari — dan hampir semuanya
+  // sia-sia karena kurir tidak memperbarui status secepat itu.
+  //
+  // Disaring di sini, bukan di consumer: pesan yang tidak pernah dibuat tidak
+  // memakai kuota queue, dan tidak ada jalan pintas yang bisa melewatkannya.
+  const due = activeShipments.filter(s => isResiPollDue({
+    status:      s.status,
+    lastChecked: s.lastChecked,
+    createdAt:   s.createdAt,
+  }));
+
   // Batch ke queue untuk diproses
-  const messages = activeShipments
+  const messages = due
     .filter(s => s.trackingNo)
     .map(s => ({
       body: {
@@ -28,9 +43,12 @@ export async function pollActiveShipments(env: Env) {
       }
     }));
 
-  if (messages.length > 0) {
-    // CF Queues send batch
-    await env.RESI_POLL_QUEUE.sendBatch(messages);
+  // Queues menolak sendBatch lebih dari 100 pesan sekali kirim. Sebelum ada
+  // penyaring di atas, toko dengan ratusan kiriman aktif melewatinya tiap 30
+  // menit dan seluruh polling gagal — diam-diam, karena cron tidak punya
+  // pembaca.
+  for (let i = 0; i < messages.length; i += 100) {
+    await env.RESI_POLL_QUEUE.sendBatch(messages.slice(i, i + 100));
   }
 }
 
@@ -45,24 +63,50 @@ export async function processResiPoll(
     const { shipmentId, trackingNo, courier, orderId } = msg.body as any;
 
     try {
-      // Cek resi via Binderbyte
-      const params = new URLSearchParams({
-        api_key: env.BINDERBYTE_API_KEY,
-        courier: courier ?? "auto",
-        awb:     trackingNo,
-      });
-      const res  = await fetch(`https://api.binderbyte.com/v1/track?${params}`);
-      const json = await res.json() as any;
+      // Cache dibaca DULU. Sebelumnya ia hanya ditulis dan tidak pernah dibaca
+      // di sini, sehingga janji "cache 30 menit untuk kurangi biaya Binderbyte"
+      // tidak pernah berlaku di jalur yang paling boros. Gunanya nyata: kalau
+      // pembeli baru saja melacak resinya sendiri lewat /api/shipping/resi,
+      // hasilnya masih segar dan cron tidak perlu membayar lagi.
+      const cached = await env.CACHE_KV.get(KV_KEYS.resi(trackingNo));
 
-      if (json.status !== 200 || !json.data) {
-        msg.ack();
-        continue;
+      let status:  string | undefined;
+      let history: any[] = [];
+
+      if (cached) {
+        const c = JSON.parse(cached) as { status?: string; history?: any[] };
+        status  = c.status;
+        history = c.history ?? [];
+      } else {
+        // Lewat services/tracking.ts, bukan memanggil Binderbyte langsung.
+        // Sebelumnya poller punya salinan kodenya sendiri yang sudah menyimpang
+        // dari milik rute — dan di sanalah RajaOngkir yang gratis dipilih lebih
+        // dulu untuk kurir yang didukungnya.
+        const hasil = await trackWaybill(env, trackingNo, courier);
+
+        if (!hasil) {
+          // lastChecked tetap disetel supaya resi yang belum terdaftar di
+          // sistem kurir tidak dipanggil ulang tiap kali cron jalan.
+          await db.update(shipments)
+            .set({ lastChecked: new Date(), updatedAt: new Date() })
+            .where(eq(shipments.id, shipmentId));
+          msg.ack();
+          continue;
+        }
+
+        status  = hasil.status;
+        history = hasil.history.map(h => ({ date: h.date, desc: h.description, location: h.location }));
+
+        await env.CACHE_KV.put(
+          KV_KEYS.resi(trackingNo),
+          JSON.stringify({ trackingNo, courier, status, history }),
+          { expirationTtl: KV_TTL.resi },
+        );
       }
 
-      const summary = json.data.summary;
-      const history = json.data.history;
-      const isDelivered = summary.status?.toLowerCase().includes("delivered") ||
-                          summary.status?.toLowerCase().includes("diterima");
+      // Aturan penilaian dipusatkan di services/tracking.ts supaya poller dan
+      // rute tidak pernah menilai "sudah sampai" dengan cara berbeda.
+      const sudahSampai = isDelivered(status);
 
       const lastStatus = history[0]
         ? { description: history[0].desc, date: history[0].date, location: history[0].location }
@@ -73,23 +117,21 @@ export async function processResiPoll(
         .set({
           lastStatus,
           lastChecked: new Date(),
-          ...(isDelivered ? { status: "delivered" as const } : {}),
+          ...(sudahSampai ? { status: "delivered" as const } : {}),
           updatedAt: new Date(),
         })
         .where(eq(shipments.id, shipmentId));
 
-      // Update resi cache
-      await env.CACHE_KV.put(
-        KV_KEYS.resi(trackingNo),
-        JSON.stringify({ trackingNo, courier, status: summary.status, history }),
-        { expirationTtl: KV_TTL.resi }
-      );
-
       // Kalau delivered, update order status
-      if (isDelivered) {
+      if (sudahSampai) {
         await db.update(orders)
           .set({ status: "delivered", updatedAt: new Date() })
           .where(eq(orders.id, orderId));
+
+        // Jaring pengaman: kalau order sampai "delivered" tanpa pernah lewat
+        // input resi manual, stoknya belum pernah dipotong. Idempoten, jadi
+        // tidak dobel kalau sudah dipotong saat shipped.
+        await deductOrderStock(db, orderId);
 
         await env.NOTIFICATION_QUEUE.send({ type: "order_delivered", orderId, trackingNo });
       }

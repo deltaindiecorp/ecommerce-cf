@@ -3,16 +3,15 @@ import { json, redirect } from "@remix-run/cloudflare";
 import { useLoaderData, useActionData, Form, useNavigation, Link } from "@remix-run/react";
 import { useState } from "react";
 
-import { API_BASE } from "~/lib/config";
+import { apiFetch } from "~/lib/api";
 import { SiteHeader } from "~/components/SiteHeader";
 import { SiteFooter } from "~/components/SiteFooter";
 import { MobileBottomNav } from "~/components/MobileBottomNav";
 
-export async function loader({ params }: LoaderFunctionArgs) {
-  const res = await fetch(`${API_BASE}/api/catalog/products/${params.slug}`);
-  if (!res.ok) throw new Response("Produk tidak ditemukan", { status: 404 });
-  const { data: product } = await res.json() as any;
-  return json({ product });
+export async function loader({ params, request }: LoaderFunctionArgs) {
+  const body = await apiFetch<any>(request, `/api/catalog/products/${params.slug}`);
+  if (!body.success || !body.data) throw new Response("Produk tidak ditemukan", { status: 404 });
+  return json({ product: body.data });
 }
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -22,16 +21,15 @@ export async function action({ request }: ActionFunctionArgs) {
   const variantId = formData.get("variantId") as string | null;
   const qty       = Number(formData.get("qty") ?? 1);
 
-  const res = await fetch(`${API_BASE}/api/cart/add`, {
+  const result = await apiFetch<any>(request, "/api/cart/add", {
     method:  "POST",
-    headers: { "Content-Type": "application/json", "X-Cart-Id": cartId },
+    headers: { "X-Cart-Id": cartId },
     body:    JSON.stringify({ productId, variantId: variantId || undefined, qty }),
   });
-
-  const result = await res.json() as any;
   if (!result.success) return json({ error: result.error }, { status: 400 });
 
-  const newCartId = result.cartId ?? cartId;
+  // /api/cart/add mengembalikan cartId di luar `data` — bentuk khusus endpoint ini.
+  const newCartId = (result as { cartId?: string }).cartId ?? cartId;
   return redirect("/cart", {
     headers: { "Set-Cookie": `cartId=${newCartId}; Path=/; Max-Age=86400; SameSite=Lax` },
   });

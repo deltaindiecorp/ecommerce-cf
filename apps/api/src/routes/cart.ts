@@ -48,17 +48,22 @@ cartRouter.post("/add", optionalAuth, async (c) => {
   const weight = variant?.weight ?? product.weight;
   const sku    = variant?.sku ?? product.sku;
 
-  // Cek stok (aggregate semua warehouse)
-  const stockRows = await db.select()
-    .from(inventory)
-    .where(variantId
-      ? and(eq(inventory.productId, productId), eq(inventory.variantId, variantId))
-      : eq(inventory.productId, productId)
-    );
+  // Cek stok (aggregate semua warehouse) — dilewati untuk produk yang memang
+  // tidak dilacak stoknya (jasa, digital, pre-order). Tanpa pengecualian ini
+  // totalStock selalu 0 dan produk semacam itu tidak bisa masuk keranjang sama
+  // sekali, jadi pengecualian di checkout saja tidak cukup.
+  if (product.trackInventory !== false) {
+    const stockRows = await db.select()
+      .from(inventory)
+      .where(variantId
+        ? and(eq(inventory.productId, productId), eq(inventory.variantId, variantId))
+        : eq(inventory.productId, productId)
+      );
 
-  const totalStock = stockRows.reduce((s, r) => s + r.qtyAvailable - r.qtyReserved, 0);
-  if (totalStock < qty) {
-    return c.json({ success: false, error: `Stok tidak cukup. Tersisa: ${totalStock}` }, 400);
+    const totalStock = stockRows.reduce((s, r) => s + r.qtyOnHand - r.qtyReserved, 0);
+    if (totalStock < qty) {
+      return c.json({ success: false, error: `Stok tidak cukup. Tersisa: ${totalStock}` }, 400);
+    }
   }
 
   // Ambil / buat cart

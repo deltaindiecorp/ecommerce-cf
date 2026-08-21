@@ -2,24 +2,17 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/cloudfla
 import { json, redirect } from "@remix-run/cloudflare";
 import { useLoaderData, useActionData, Form, useNavigation } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
-
-function getToken(r: Request) {
-  return r.headers.get("Cookie")?.match(/admin_token=([^;]+)/)?.[1] ?? "";
-}
+import { apiFetch, apiPublic, formatApiError } from "~/lib/api";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   void request;
-  const res  = await fetch(`${API_BASE}/api/catalog/categories`);
-  const body = await res.json() as any;
-  return json({ categories: body.success ? body.data : [] });
+  const body = await apiPublic<any[]>("/api/catalog/categories");
+  return json({ categories: body.data ?? [] });
 }
 
 export async function action({ request }: ActionFunctionArgs) {
-  const token    = getToken(request);
   const formData = await request.formData();
   const intent   = formData.get("intent") as string;
-  const headers  = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
 
   if (intent === "create") {
     const payload = {
@@ -27,15 +20,17 @@ export async function action({ request }: ActionFunctionArgs) {
       slug: formData.get("slug"),
       sortOrder: Number(formData.get("sortOrder") || 0),
     };
-    const res    = await fetch(`${API_BASE}/api/catalog/categories`, { method: "POST", headers, body: JSON.stringify(payload) });
-    const result = await res.json() as any;
+    const result = await apiFetch(request, "/api/catalog/categories", {
+      method: "POST", body: JSON.stringify(payload),
+    });
     if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect("/categories");
   }
 
   if (intent === "deactivate") {
     const id = formData.get("id") as string;
-    await fetch(`${API_BASE}/api/catalog/categories/${id}`, { method: "DELETE", headers });
+    const result = await apiFetch(request, `/api/catalog/categories/${id}`, { method: "DELETE" });
+    if (!result.success) return json({ error: result.error }, { status: 400 });
     return redirect("/categories");
   }
 
@@ -68,8 +63,8 @@ export default function CategoriesPage() {
             <label className="block text-xs text-gray-500 mb-1">Urutan</label>
             <input name="sortOrder" type="number" defaultValue={0} className="w-full border rounded-lg px-3 py-2 text-sm" />
           </div>
-          {actionData?.error && (
-            <p className="col-span-3 text-red-500 text-sm">{JSON.stringify(actionData.error)}</p>
+          {Boolean(actionData?.error) && (
+            <p className="col-span-3 text-red-500 text-sm">{formatApiError(actionData?.error)}</p>
           )}
           <div className="col-span-3">
             <button
@@ -84,7 +79,8 @@ export default function CategoriesPage() {
       </div>
 
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[46rem]">
           <thead className="bg-gray-50 border-b">
             <tr>
               <th className="text-left px-4 py-3 font-semibold text-gray-600">Nama</th>
@@ -114,6 +110,7 @@ export default function CategoriesPage() {
             )}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );

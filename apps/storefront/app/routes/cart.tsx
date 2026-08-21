@@ -2,7 +2,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/cloudfla
 import { json, redirect } from "@remix-run/cloudflare";
 import { useLoaderData, Form, Link, useNavigation } from "@remix-run/react";
 
-import { API_BASE } from "~/lib/config";
+import { apiFetch } from "~/lib/api";
 import { SiteHeader } from "~/components/SiteHeader";
 import { SiteFooter } from "~/components/SiteFooter";
 import { MobileBottomNav } from "~/components/MobileBottomNav";
@@ -15,8 +15,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const cartId = getCartId(request);
   if (!cartId) return json({ cart: null, cartId: null });
 
-  const res  = await fetch(`${API_BASE}/api/cart`, { headers: { "X-Cart-Id": cartId } });
-  const body = await res.json() as any;
+  const body = await apiFetch<any>(request, "/api/cart", { headers: { "X-Cart-Id": cartId } });
   return json({ cart: body.data ?? null, cartId });
 }
 
@@ -31,17 +30,17 @@ export async function action({ request }: ActionFunctionArgs) {
 
   if (intent === "update") {
     const qty = Number(formData.get("qty") ?? 0);
-    await fetch(`${API_BASE}/api/cart/item/${productId}`, {
+    await apiFetch(request, `/api/cart/item/${productId}`, {
       method:  "PATCH",
-      headers: { "Content-Type": "application/json", "X-Cart-Id": cartId },
+      headers: { "X-Cart-Id": cartId },
       body:    JSON.stringify({ qty, variantId: variantId || undefined }),
     });
   }
 
   if (intent === "remove") {
-    await fetch(`${API_BASE}/api/cart/item/${productId}`, {
+    await apiFetch(request, `/api/cart/item/${productId}`, {
       method:  "PATCH",
-      headers: { "Content-Type": "application/json", "X-Cart-Id": cartId },
+      headers: { "X-Cart-Id": cartId },
       body:    JSON.stringify({ qty: 0, variantId: variantId || undefined }),
     });
   }

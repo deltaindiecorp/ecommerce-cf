@@ -8,6 +8,10 @@ compatibility_flags = ["nodejs_compat"]
 binding      = "DB"
 database_name = "ecommerce-db"
 database_id  = "YOUR_D1_DATABASE_ID"
+# Schema-nya hidup di packages/db, bukan di sini. Tanpa baris ini
+# `wrangler d1 migrations` mencari ./migrations relatif ke berkas ini dan tidak
+# menemukan apa pun. Lihat scripts/db-migrate.mjs.
+migrations_dir = "../../packages/db/migrations"
 
 # ─── KV Namespaces ────────────────────────────────────────────────────────────
 [[kv_namespaces]]
@@ -55,9 +59,20 @@ class_name  = "CartDurableObject"
 name        = "STOCK_LOCK_DO"
 class_name  = "StockLockDurableObject"
 
+# `new_sqlite_classes`, bukan `new_classes`. Cloudflare sudah tidak melayani
+# pembuatan namespace Durable Object berbasis key-value:
+#
+#   Creating new key-value backed Durable Object namespaces is no longer
+#   supported on this account. [code: 10099]
+#
+# Ketahuan saat deploy sungguhan pertama — `wrangler dev` lokal tidak peduli
+# yang mana, jadi ini mustahil terlihat tanpa menyentuh Cloudflare.
+#
+# Aman untuk kedua DO di sini: keduanya cuma memakai storage.get/put/delete,
+# yang didukung penuh oleh backing SQLite.
 [[migrations]]
 tag = "v1"
-new_classes = ["CartDurableObject", "StockLockDurableObject"]
+new_sqlite_classes = ["CartDurableObject", "StockLockDurableObject"]
 
 # ─── Cron Triggers ────────────────────────────────────────────────────────────
 [triggers]
@@ -68,22 +83,26 @@ crons = [
 ]
 
 # ─── Environment Variables ────────────────────────────────────────────────────
+# HANYA konfigurasi non-rahasia yang boleh ada di sini.
+#
+# JANGAN pernah menambahkan JWT_SECRET, kunci gateway pembayaran, atau API key
+# apa pun ke blok [vars] — nilai di sini MENANG atas secret bernama sama dan
+# menimpanya setiap kali `wrangler deploy` jalan. Sebelumnya kesembilan secret
+# tercantum di sini dengan nilai "", sehingga mengikuti langkah
+# `wrangler secret put` di scripts/setup.sh justru menghasilkan deployment yang
+# semua secretnya kosong: JWT_SECRET kosong membuat crypto.subtle.importKey
+# melempar DataError, dan seluruh login serta requireAdmin mati serentak.
+#
+# Semua rahasia diset lewat: cd apps/api && npx wrangler secret put <NAMA>
+# Daftar lengkapnya ada di scripts/setup.sh dan apps/api/.dev.vars.example.
+# Untuk dev lokal, wrangler membacanya dari apps/api/.dev.vars (gitignored).
 [vars]
 ENVIRONMENT          = "production"
 APP_URL              = "https://your-store.com"
 CORS_ORIGINS         = "https://your-store.com,http://localhost:3000,http://localhost:3001"
 EMAIL_FROM_NAME      = "Deltacommerce"
 EMAIL_FROM_ADDRESS   = "noreply@your-store.com"
-RAJAONGKIR_API_KEY   = ""   # isi di CF Dashboard → Secrets
-BINDERBYTE_API_KEY   = ""
-MIDTRANS_SERVER_KEY  = ""
-MIDTRANS_CLIENT_KEY  = ""
-MIDTRANS_IS_PROD     = "true"
-XENDIT_SECRET_KEY    = ""
-XENDIT_WEBHOOK_TOKEN = ""
-RESEND_API_KEY       = ""
-JWT_SECRET           = ""
-ADMIN_BOOTSTRAP_SECRET = ""  # isi sementara utk setup admin pertama, lalu kosongkan lagi
+MIDTRANS_IS_PROD     = "true"   # "false" untuk sandbox Midtrans
 
 # ─── Migration Path: Hyperdrive (uncomment jika migrasi ke Neon) ──────────────
 # [[hyperdrive]]

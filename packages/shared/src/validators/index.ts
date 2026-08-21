@@ -20,9 +20,13 @@ export const guestInfoSchema = z.object({
 export const checkoutSchema = z.object({
   ...guestInfoSchema.shape,
   shippingAddress: shippingAddressSchema,
-  courier:        z.string(),
-  service:        z.string(),
-  shippingCost:   z.number().int().min(0),
+  courier:        z.string().min(2).max(20),
+  service:        z.string().min(1).max(30),
+  // shippingCost SENGAJA tidak ada di sini. Sebelumnya nilainya diambil dari
+  // form pembeli dan dipakai apa adanya untuk menghitung total, sehingga siapa
+  // pun bisa menyetel ongkirnya sendiri jadi nol. Server kini menghitungnya
+  // dari kurir + layanan + berat + kota tujuan. Field yang tetap dikirim form
+  // lama akan diabaikan zod, bukan menyebabkan error.
   paymentMethod:  z.enum(["midtrans", "xendit", "cod"]),
   voucherCode:    z.string().optional(),
   note:           z.string().max(500).optional(),
@@ -42,14 +46,21 @@ export const paginationSchema = z.object({
 // ─── Admin: Product / Category / Variant ──────────────────────────────────────
 const slugSchema = z.string().min(2).regex(/^[a-z0-9-]+$/, "Slug hanya boleh huruf kecil, angka, dan strip");
 
+// Kolom nullable di DB dibuat .nullable() juga di schema — bukan cuma .optional().
+// Bedanya penting saat update: `undefined` dilewati drizzle (nilai lama bertahan),
+// sedangkan `null` benar-benar menulis NULL. Tanpa ini, form edit tidak akan bisa
+// mengosongkan harga modal, harga coret, atau kategori.
 export const productInputSchema = z.object({
-  categoryId:   z.string().uuid().optional(),
+  categoryId:   z.string().uuid().nullable().optional(),
   name:         z.string().min(2),
   slug:         slugSchema,
   sku:          z.string().min(1),
-  description:  z.string().optional(),
+  description:  z.string().nullable().optional(),
   price:        z.number().int().positive(),
-  comparePrice: z.number().int().positive().optional(),
+  comparePrice: z.number().int().positive().nullable().optional(),
+  // min(0) bukan positive(): modal 0 sah (barang sampel/hadiah), sementara
+  // tidak diisi sama sekali tetap dibedakan sebagai NULL.
+  costPrice:    z.number().int().min(0).nullable().optional(),
   weight:       z.number().int().min(0).default(0),
   width:        z.number().int().min(0).optional(),
   height:       z.number().int().min(0).optional(),
@@ -58,8 +69,9 @@ export const productInputSchema = z.object({
   tags:         z.array(z.string()).default([]),
   status:       z.enum(["active", "draft", "archived"]).default("draft"),
   isFeatured:   z.boolean().default(false),
-  metaTitle:    z.string().optional(),
-  metaDesc:     z.string().optional(),
+  trackInventory: z.boolean().default(true),
+  metaTitle:    z.string().nullable().optional(),
+  metaDesc:     z.string().nullable().optional(),
 });
 export const productUpdateSchema = productInputSchema.partial();
 
@@ -73,23 +85,140 @@ export const categoryInputSchema = z.object({
 });
 export const categoryUpdateSchema = categoryInputSchema.partial();
 
+// Sama seperti productInputSchema: kolom nullable di DB dibuat .nullable() juga
+// supaya form edit bisa mengosongkannya (undefined dilewati drizzle, null ditulis).
 export const variantInputSchema = z.object({
   name:      z.string().min(1),
   sku:       z.string().min(1),
-  price:     z.number().int().positive().optional(),
-  weight:    z.number().int().min(0).optional(),
+  price:     z.number().int().positive().nullable().optional(), // null = ikut harga produk
+  costPrice: z.number().int().min(0).nullable().optional(),
+  weight:    z.number().int().min(0).nullable().optional(),     // null = ikut berat produk
   options:   z.record(z.string()).default({}),
-  imageUrl:  z.string().optional(),
+  imageUrl:  z.string().nullable().optional(),
   isActive:  z.boolean().default(true),
 });
 export const variantUpdateSchema = variantInputSchema.partial();
 
+// ─── Admin: Gudang ────────────────────────────────────────────────────────────
+// `priority` menentukan urutan gudang saat routing checkout (1 = paling
+// diutamakan), `isActive` menentukan gudang boleh dipakai memenuhi order atau
+// tidak — keduanya dibaca langsung oleh POST /api/checkout.
+export const warehouseInputSchema = z.object({
+  name:             z.string().min(2),
+  code:             z.string().min(2).max(10).regex(/^[A-Z0-9-]+$/, "Kode gudang huruf besar, angka, dan strip saja"),
+  address:          z.string().min(5),
+  city:             z.string().min(2),
+  province:         z.string().min(2),
+  postalCode:       z.string().regex(/^\d{5}$/, "Kode pos harus 5 angka"),
+  rajaongkirCityId: z.number().int().positive(),
+  phone:            z.string().nullable().optional(),
+  picName:          z.string().nullable().optional(),
+  isActive:         z.boolean().default(true),
+  priority:         z.number().int().min(1).default(1),
+});
+export const warehouseUpdateSchema = warehouseInputSchema.partial();
+
+// ─── Admin: Transfer Stok Antar Gudang ────────────────────────────────────────
+export const warehouseTransferSchema = z.object({
+  fromWarehouse: z.string().uuid(),
+  toWarehouse:   z.string().uuid(),
+  productId:     z.string().uuid(),
+  // Wajib diteruskan: satu produk bisa punya baris inventory terpisah per varian,
+  // dan transfer yang mengabaikannya akan mengenai semua varian sekaligus.
+  variantId:     z.string().uuid().nullable().optional(),
+  qty:           z.number().int().positive(),
+  note:          z.string().max(200).nullable().optional(),
+}).refine(d => d.fromWarehouse !== d.toWarehouse, {
+  message: "Gudang asal dan tujuan tidak boleh sama",
+  path:    ["toWarehouse"],
+});
+
 // ─── Admin: Inventory Adjustment ───────────────────────────────────────────────
+// `movementType` dipisah dari tanda qty. Versi lama menyimpulkannya dari
+// positif/negatif — qty > 0 selalu dicatat "in" — sehingga barang datang dari
+// supplier dan koreksi opname yang naik tercampur jadi satu di ledger, dan
+// laporan stok tidak akan pernah bisa memisahkan pembelian dari koreksi.
 export const inventoryAdjustSchema = z.object({
-  productId: z.string().uuid(),
-  variantId: z.string().uuid().optional(),
-  qty:       z.number().int().refine(v => v !== 0, "qty tidak boleh 0"), // + stok masuk, - koreksi turun
-  note:      z.string().max(200).optional(),
+  productId:    z.string().uuid(),
+  variantId:    z.string().uuid().nullable().optional(),
+  qty:          z.number().int().refine(v => v !== 0, "qty tidak boleh 0"), // + naik, - turun
+  movementType: z.enum(["in", "adjustment"]).default("adjustment"),
+  note:         z.string().max(200).nullable().optional(),
+}).refine(d => !(d.movementType === "in" && d.qty < 0), {
+  message: "Barang masuk tidak bisa berjumlah negatif — pakai koreksi opname",
+  path:    ["qty"],
+});
+
+// ─── Admin: Status Order ──────────────────────────────────────────────────────
+export const orderStatusUpdateSchema = z.object({
+  status: z.enum([
+    "pending_payment", "paid", "processing", "packed",
+    "shipped", "delivered", "completed", "cancelled", "refunded",
+  ]),
+  note: z.string().max(500).nullable().optional(),
+});
+
+// ─── Admin: Kelola User ───────────────────────────────────────────────────────
+export const adminUserCreateSchema = z.object({
+  name:     z.string().min(2).max(80),
+  email:    z.string().email(),
+  phone:    z.string().regex(/^(\+62|62|0)[0-9]{8,12}$/, "Format no HP tidak valid"),
+  password: z.string().min(8, "Password minimal 8 karakter"),
+  role:     z.enum(["admin", "staff", "customer"]),
+});
+
+// Password TIDAK bisa diubah lewat sini. Admin yang bisa menyetel password
+// orang lain berarti bisa memakai akun itu tanpa jejak; pemulihan akses
+// ditangani alur reset lewat email, yang buktinya ada di kotak masuk pemilik.
+export const adminUserUpdateSchema = z.object({
+  name:  z.string().min(2).max(80).optional(),
+  phone: z.string().regex(/^(\+62|62|0)[0-9]{8,12}$/, "Format no HP tidak valid").optional(),
+  role:  z.enum(["admin", "staff", "customer"]).optional(),
+});
+
+// ─── Reset Password ───────────────────────────────────────────────────────────
+export const forgotPasswordSchema = z.object({
+  email: z.string().email(),
+});
+
+export const resetPasswordSchema = z.object({
+  token:    z.string().min(20),
+  password: z.string().min(8, "Password minimal 8 karakter"),
+});
+
+// ─── Admin: Pengaturan Toko ───────────────────────────────────────────────────
+// Semua opsional: pengaturan diperbarui sebagian, dan field yang dikosongkan
+// harus benar-benar jadi NULL (bukan dilewati drizzle) — karena itu .nullable().
+export const storeSettingsUpdateSchema = z.object({
+  storeName:    z.string().min(1).max(60),
+  tagline:      z.string().max(200).nullable().optional(),
+  supportEmail: z.string().email().nullable().optional().or(z.literal("").transform(() => null)),
+  supportPhone: z.string().max(30).nullable().optional(),
+  address:      z.string().max(300).nullable().optional(),
+}).partial({ storeName: true });
+
+// ─── Pembayaran ───────────────────────────────────────────────────────────────
+// `gateway` sengaja TIDAK diterima dari klien. Gateway ditentukan dari
+// paymentMethod yang dipilih pembeli saat checkout dan tersimpan di order —
+// kalau diambil dari request ini, pembeli bisa memilih COD lalu meminta
+// invoice gateway, atau sebaliknya.
+export const paymentCreateSchema = z.object({
+  orderId: z.string().uuid(),
+  method:  z.string().min(2).max(30).nullable().optional(), // va_bca, qris, gopay, ...
+});
+
+// ─── Admin: Pengiriman ────────────────────────────────────────────────────────
+// Endpoint shipment sebelumnya menerima body apa adanya tanpa satu pun cek:
+// warehouseId sembarang string, biaya bisa negatif, dan order-nya tidak
+// dipastikan ada. Salah ketik menghasilkan shipment yatim sekaligus menyetel
+// order jadi "shipped".
+export const shipmentInputSchema = z.object({
+  warehouseId: z.string().uuid(),
+  courier:     z.string().min(2).max(20),
+  service:     z.string().min(1).max(30),
+  etd:         z.string().max(30).nullable().optional(),
+  cost:        z.number().int().min(0),
+  trackingNo:  z.string().min(3).max(50).nullable().optional(),
 });
 
 // ─── Admin: Voucher ─────────────────────────────────────────────────────────────
