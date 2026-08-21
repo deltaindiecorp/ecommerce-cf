@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { midtransSignature } from "./payment";
+import { midtransSignature, xenditWebhookVerdict } from "./payment";
 
 // Vektor di bawah dihitung DI LUAR kode ini (python hashlib) memakai rumus resmi
 // Midtrans, lalu ditempel apa adanya. Kalau ekspektasinya ikut dihitung oleh
@@ -53,5 +53,68 @@ describe("signature webhook Midtrans", () => {
 
   it("hex 128 karakter huruf kecil", async () => {
     expect(await midtransSignature(ORDER, STATUS, GROSS, KEY)).toMatch(/^[0-9a-f]{128}$/);
+  });
+});
+
+// ─── Webhook Xendit ───────────────────────────────────────────────────────────
+// Xendit TIDAK menandatangani isi webhook-nya — hanya token statis di header.
+// Berbeda dari Midtrans, yang signature-nya mencakup gross_amount, di sini tidak
+// ada apa pun yang mengikat nominal maupun invoice mana yang dimaksud. Jadi
+// pemeriksaannya harus dilakukan terhadap catatan kita sendiri, dan fungsi
+// inilah yang memutuskan sebuah pesanan ditandai lunas.
+describe("keputusan webhook Xendit", () => {
+  const dasar = {
+    status:            "PAID",
+    invoiceId:         "inv-123",
+    expectedInvoiceId: "inv-123",
+    paidAmount:        90000,
+    expectedAmount:    90000,
+  };
+
+  it("nominal pas dan invoice cocok → lunas", () => {
+    expect(xenditWebhookVerdict(dasar)).toEqual({ kind: "lunas" });
+  });
+
+  it("SETTLED diperlakukan sama dengan PAID", () => {
+    expect(xenditWebhookVerdict({ ...dasar, status: "SETTLED" })).toEqual({ kind: "lunas" });
+  });
+
+  // Sebelumnya paid_amount tidak pernah dibandingkan sama sekali: bayar seribu
+  // rupiah untuk tagihan sembilan puluh ribu tetap menandai pesanan lunas.
+  it("kurang bayar DITOLAK, bukan ditandai lunas", () => {
+    const v = xenditWebhookVerdict({ ...dasar, paidAmount: 1000 });
+    expect(v.kind).toBe("tolak");
+    if (v.kind === "tolak") expect(v.alasan).toContain("kurang dari tagihan");
+  });
+
+  // Arah sebaliknya sengaja diterima: uangnya sudah masuk, dan menolak justru
+  // meninggalkan pesanan menggantung padahal pembeli sudah membayar.
+  it("lebih bayar tetap dianggap lunas", () => {
+    expect(xenditWebhookVerdict({ ...dasar, paidAmount: 95000 })).toEqual({ kind: "lunas" });
+  });
+
+  // Token Xendit statis dan dipakai bersama semua webhook. Kalau ia bocor,
+  // pencocokan invoice inilah yang mencegah satu request menandai pembayaran
+  // mana pun lunas hanya dengan menyebut external_id-nya.
+  it("invoice yang tidak cocok ditolak", () => {
+    const v = xenditWebhookVerdict({ ...dasar, invoiceId: "inv-punya-orang-lain" });
+    expect(v.kind).toBe("tolak");
+    if (v.kind === "tolak") expect(v.alasan).toContain("Invoice tidak cocok");
+  });
+
+  it("EXPIRED menandai gagal", () => {
+    expect(xenditWebhookVerdict({ ...dasar, status: "EXPIRED" })).toEqual({ kind: "gagal" });
+  });
+
+  it.each(["PENDING", "UNKNOWN", ""])("status %s diabaikan, bukan ditebak", (status) => {
+    expect(xenditWebhookVerdict({ ...dasar, status })).toEqual({ kind: "abaikan" });
+  });
+
+  it.each([
+    ["null", null],
+    ["undefined", undefined],
+    ["NaN", Number.NaN],
+  ])("nominal %s ditolak, bukan dianggap nol yang lolos", (_l, paidAmount) => {
+    expect(xenditWebhookVerdict({ ...dasar, paidAmount: paidAmount as any }).kind).toBe("tolak");
   });
 });

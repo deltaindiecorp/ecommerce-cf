@@ -161,9 +161,13 @@ paymentRouter.post("/webhook/midtrans", async (c) => {
 
 // ─── POST /api/payment/webhook/xendit ────────────────────────────────────────
 paymentRouter.post("/webhook/xendit", async (c) => {
-  // Verifikasi Xendit webhook token
-  const webhookToken = c.req.header("x-callback-token");
-  if (webhookToken !== c.env.XENDIT_WEBHOOK_TOKEN) {
+  // Xendit TIDAK menandatangani isi webhook — ia hanya mengirim token statis di
+  // header. Berbeda dari Midtrans, yang signature-nya mencakup gross_amount,
+  // di sini tidak ada apa pun yang mengikat nominal maupun invoice mana yang
+  // dimaksud. Token itu satu-satunya pintu, jadi sisanya diperiksa manual
+  // terhadap catatan kita sendiri.
+  if (!timingSafeEqual(c.req.header("x-callback-token") ?? "", c.env.XENDIT_WEBHOOK_TOKEN ?? "")) {
+    console.error("[webhook] token Xendit tidak cocok");
     return c.json({ success: false, error: "Invalid webhook token" }, 400);
   }
 
@@ -184,14 +188,77 @@ paymentRouter.post("/webhook/xendit", async (c) => {
 
   if (payment.status === "paid") return c.json({ success: true });
 
-  if (payload.status === "PAID" || payload.status === "SETTLED") {
+  const verdict = xenditWebhookVerdict({
+    status:            payload.status,
+    invoiceId:         payload.id,
+    expectedInvoiceId: payment.gatewayTxnId,
+    paidAmount:        payload.paid_amount,
+    expectedAmount:    payment.amount,
+  });
+
+  if (verdict.kind === "tolak") {
+    console.error(`[webhook] Xendit ditolak untuk payment ${paymentId}: ${verdict.alasan}`);
+    return c.json({ success: false, error: verdict.alasan }, 400);
+  }
+
+  if (verdict.kind === "lunas") {
     await handlePaymentSuccess(db, c.env, payment.orderId, paymentId, payload);
-  } else if (payload.status === "EXPIRED") {
+  } else if (verdict.kind === "gagal") {
     await handlePaymentFailed(db, c.env, payment.orderId, paymentId);
   }
 
   return c.json({ success: true });
 });
+
+export type XenditVerdict =
+  | { kind: "lunas" }
+  | { kind: "gagal" }
+  | { kind: "abaikan" }
+  | { kind: "tolak"; alasan: string };
+
+// Dipisah jadi fungsi murni supaya bisa dikunci test: inilah yang memutuskan
+// sebuah pesanan ditandai lunas, dan Xendit tidak memberi jaminan kriptografis
+// apa pun atas isi webhook-nya.
+export function xenditWebhookVerdict(args: {
+  status:            string;
+  invoiceId:         string | null | undefined;
+  expectedInvoiceId: string | null | undefined;
+  paidAmount:        number | null | undefined;
+  expectedAmount:    number;
+}): XenditVerdict {
+  const status = String(args.status ?? "").toUpperCase();
+
+  // Invoice harus yang memang kita buat. Tanpa ini, satu token yang bocor cukup
+  // untuk menandai pembayaran mana pun lunas dengan menyebut external_id-nya.
+  if (args.expectedInvoiceId && args.invoiceId && args.invoiceId !== args.expectedInvoiceId) {
+    return { kind: "tolak", alasan: "Invoice tidak cocok dengan pembayaran ini" };
+  }
+
+  if (status === "EXPIRED") return { kind: "gagal" };
+  if (status !== "PAID" && status !== "SETTLED") return { kind: "abaikan" };
+
+  // Kurang bayar TIDAK ditandai lunas. Lebih bayar diterima — uangnya sudah
+  // masuk, dan menolaknya justru meninggalkan pesanan menggantung padahal
+  // pembeli sudah membayar.
+  const dibayar = Number(args.paidAmount ?? 0);
+  if (!Number.isFinite(dibayar) || dibayar < args.expectedAmount) {
+    return {
+      kind: "tolak",
+      alasan: `Nominal dibayar (${dibayar}) kurang dari tagihan (${args.expectedAmount})`,
+    };
+  }
+
+  return { kind: "lunas" };
+}
+
+// Perbandingan token tanpa jalan pintas panjang/isi. Selisih waktunya lewat
+// jaringan memang nyaris tak terukur, tapi biayanya satu fungsi kecil.
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let beda = 0;
+  for (let i = 0; i < a.length; i++) beda |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return beda === 0;
+}
 
 // ─── POST /api/payment/:orderId/refund ────────────────────────────────────────
 // Full refund (bukan partial per-item). Coba proses ke gateway dulu (Midtrans/
